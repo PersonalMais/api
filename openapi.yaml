@@ -1,0 +1,1957 @@
+openapi: 3.0.3
+info:
+  title: Personal+ API — contrato que o app precisa
+  version: 1.0.0
+  description: |
+    Contrato completo que o app **Personal+** (Expo / React Native) consome.
+    Base: o backend atual em `https://api.personal.matbessa.com.br` (v0.1.0), comparado em 27/10/2026.
+
+    Cada operação começa com o status dela:
+
+    | Status | Significado |
+    | --- | --- |
+    | **[OK]** | Já existe e está igual ao contrato. Não mexer. |
+    | **[AJUSTAR]** | Já existe, mas o corpo, a resposta ou a regra precisa mudar como descrito na operação. |
+    | **[FALTA]** | Não existe. Implementar exatamente como descrito. |
+
+    ## Convenções (valem para todos os endpoints)
+
+    1. **Sem prefixo de versão.** Os caminhos são exatamente os deste documento (`/auth/login`, `/personal/students`...).
+    2. **JSON em camelCase** em todas as requisições e respostas. Nunca snake_case.
+    3. **IDs são inteiros.**
+    4. **Datas:** data e hora em ISO 8601 UTC (`2026-10-27T13:24:38Z`); só data em `YYYY-MM-DD`.
+    5. **Autenticação:** `Authorization: Bearer <JWT>`. Endpoints sem cadeado são públicos.
+    6. **Papéis:** rotas `/personal/*` só para `role = personal`; rotas `/aluno/*` só para `role = aluno`. Papel errado → `403` com `code: FORBIDDEN_ROLE`.
+    7. **Vínculo:** toda rota `/personal/students/{studentId}/*` exige vínculo ativo entre o Personal logado e o aluno. Sem vínculo → `404` com `code: STUDENT_NOT_FOUND` (não revelar que o aluno existe).
+    8. **PATCH é parcial:** só os campos enviados mudam. Campo ausente nunca é apagado. Para limpar um campo opcional, o app envia `null`.
+    9. **Erros** sempre no formato `Error`: `{"error": "mensagem legível", "code": "CODIGO_ESTAVEL"}`. O app traduz pelo `code`, então ele nunca pode mudar. Nunca devolver mensagem de banco/ORM.
+    10. **Sem paginação** nesta versão: listas devolvem tudo, ordenadas como indicado em cada endpoint.
+    11. **CORS obrigatório:** responder ao preflight `OPTIONS` com `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS` e `Access-Control-Allow-Headers: Authorization, Content-Type`. Hoje o preflight responde 200 sem esses headers, e a versão web do app fica bloqueada.
+
+    ## Códigos de erro
+
+    | HTTP | code | Quando |
+    | --- | --- | --- |
+    | 400 | `VALIDATION_ERROR` | Corpo inválido. `error` diz qual campo. |
+    | 401 | `UNAUTHORIZED` | Token ausente, inválido, expirado ou revogado. |
+    | 401 | `INVALID_CREDENTIALS` | Login com e-mail ou senha errados. |
+    | 403 | `FORBIDDEN_ROLE` | Papel errado para a rota. |
+    | 403 | `PLAN_LIMIT_REACHED` | Personal atingiu o limite de alunos do plano. |
+    | 404 | `NOT_FOUND` | Recurso não existe ou não pertence ao usuário. |
+    | 404 | `STUDENT_NOT_FOUND` | Aluno inexistente ou sem vínculo ativo com o Personal. |
+    | 404 | `WORKOUT_NOT_FOUND` | Aluno sem treino vigente. |
+    | 404 | `ANAMNESIS_NOT_FOUND` | Anamnese ainda não preenchida. |
+    | 409 | `EMAIL_TAKEN` | E-mail já cadastrado. |
+    | 409 | `ALREADY_LINKED` | Aluno já tem vínculo ativo com outro Personal. |
+    | 409 | `EXERCISE_IN_USE` | Exercício customizado usado em algum treino. |
+    | 409 | `PHOTO_LIMIT_REACHED` | Aluno com 90 fotos de progresso. |
+    | 413 | `FILE_TOO_LARGE` | Upload acima de 10 MB. |
+    | 415 | `UNSUPPORTED_MEDIA_TYPE` | Upload que não é JPEG, PNG ou WebP. |
+
+    ## Limites de plano do Personal
+
+    | personalPlan | Máximo de alunos com vínculo ativo |
+    | --- | --- |
+    | `free` | 1 |
+    | `pro` | 5 |
+    | `unlimited` | sem limite |
+servers:
+  - url: https://api.personal.matbessa.com.br
+    description: Produção
+  - url: http://localhost:5000
+    description: Local
+tags:
+  - name: Sistema
+    description: Saúde do serviço.
+  - name: Autenticação
+    description: Contas e sessões. Ajustes no que já existe.
+  - name: Perfil
+    description: Dados do próprio usuário (Personal e Aluno), foto e privacidade.
+  - name: Alunos do Personal
+    description: O Personal cadastra, lista, edita e desvincula alunos, e lê os dados de saúde deles.
+  - name: Vínculo do Aluno
+    description: O aluno encontra o Personal e confirma o vínculo.
+  - name: Exercícios
+    description: Catálogo global e exercícios customizados do Personal.
+  - name: Treino (Personal)
+    description: O Personal monta o treino vigente do aluno, dividido em dias (A, B, C...).
+  - name: Treino (Aluno)
+    description: O aluno lê o treino, executa sessões e marca séries.
+  - name: Saúde e evolução (Aluno)
+    description: Anamnese, medidas corporais e fotos de progresso.
+  - name: Notificações
+    description: Avisos para Personal e Aluno. Mesmas rotas para os dois papéis.
+  - name: Personal
+    description: Painel e indicações.
+  - name: Pagamentos simulados
+    description: Fluxos de pagamento que hoje só aprovam. Precisam persistir o resultado.
+  - name: Suporte
+    description: Tickets de suporte.
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      summary: '[OK] Health check'
+      x-status: ok
+      security: []
+      responses:
+        '200':
+          description: Serviço no ar.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+
+  # ---------------------------------------------------------------- Auth
+  /auth/signup:
+    post:
+      tags: [Autenticação]
+      summary: '[AJUSTAR] Criar conta'
+      x-status: ajustar
+      description: |
+        **O que muda:** hoje o corpo só aceita `email`, `password` e `role`, e a resposta devolve só `{id, email, role}`.
+
+        1. Aceitar `name` (obrigatório), `personalPlan` e `referralCode`.
+        2. `personalPlan` só vale para `role = personal`; padrão `free`. Para aluno, ignorar e gravar `null`.
+        3. Para Personal, gerar `referralCode` único: 8 caracteres `A-Z0-9`, sem `0/O/1/I`.
+        4. Se `referralCode` for enviado, `role = personal` e `personalPlan` for `pro` ou `unlimited`: criar um `Referral` para o dono do código com `credit = 5` e `status = pending`, e devolver `referralApplied: true` + `referrerName`. Código inexistente não é erro: `referralApplied: false`.
+        5. Responder `201` com `AuthResponse` contendo o `User` completo.
+        6. Disparar a regra de vínculo pendente: se algum Personal já tinha cadastrado este e-mail (ver `POST /personal/students`), a conta nova já nasce vinculada.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignupRequest' }
+      responses:
+        '201':
+          description: Conta criada e sessão iniciada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignupResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: '`EMAIL_TAKEN`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/login:
+    post:
+      tags: [Autenticação]
+      summary: '[AJUSTAR] Entrar'
+      x-status: ajustar
+      description: |
+        **O que muda:** a resposta precisa trazer o `User` completo (hoje vem só `{id, email, role}`), e o corpo não deve exigir nem usar `role`.
+
+        Senha errada ou e-mail inexistente → `401` com `code: INVALID_CREDENTIALS` (mesma resposta nos dois casos).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Sessão iniciada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: '`INVALID_CREDENTIALS`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/me:
+    get:
+      tags: [Autenticação]
+      summary: '[AJUSTAR] Usuário logado'
+      x-status: ajustar
+      description: |
+        **O que muda:** hoje responde `{"user": {id, email, role}}`. Deve responder o objeto `User` completo **direto**, sem envelope.
+        O app chama este endpoint ao abrir para restaurar a sessão.
+      responses:
+        '200':
+          description: Usuário logado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Autenticação]
+      summary: '[OK] Sair'
+      x-status: ok
+      description: Revoga o token atual (pelo `jti`). Depois disso, o mesmo token recebe `401`.
+      responses:
+        '204': { description: Sessão encerrada. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/refresh:
+    post:
+      tags: [Autenticação]
+      summary: '[AJUSTAR] Renovar sessão'
+      x-status: ajustar
+      description: |
+        **O que muda:** documentar a resposta e revogar o token antigo.
+
+        1. Emitir um token novo com a mesma validade de um login.
+        2. Revogar o `jti` do token usado na chamada.
+        3. Responder `{"token": "..."}`.
+      responses:
+        '200':
+          description: Token novo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/forgot-password:
+    post:
+      tags: [Autenticação]
+      summary: '[AJUSTAR] Esqueci a senha'
+      x-status: ajustar
+      description: |
+        **O que muda:** hoje responde `503 password reset delivery is unavailable`.
+
+        1. Gerar um código de 6 dígitos, válido por 30 minutos e de uso único.
+        2. Enviar por e-mail. Enquanto não houver provedor de e-mail, logar o código no servidor (nunca devolver na resposta).
+        3. Responder **sempre** `202`, exista o e-mail ou não, para não revelar quais e-mails têm conta.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '202': { description: Se o e-mail existir, o código foi enviado. Corpo vazio. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/reset-password:
+    post:
+      tags: [Autenticação]
+      summary: '[OK] Redefinir senha'
+      x-status: ok
+      description: |
+        `token` é o código de 6 dígitos de `/auth/forgot-password`. Código errado, expirado ou já usado → `400` `VALIDATION_ERROR`.
+        Ao redefinir, revogar todas as sessões abertas do usuário.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, token, password]
+              properties:
+                email: { type: string, format: email }
+                token: { type: string, example: '482913' }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '200': { description: Senha redefinida. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  # ---------------------------------------------------------------- Perfil
+  /personal/profile/complete:
+    post:
+      tags: [Perfil]
+      summary: '[AJUSTAR] Completar perfil do Personal (onboarding)'
+      x-status: ajustar
+      description: |
+        **O que muda:** aceitar todos os campos de `PersonalProfileRequest` (hoje só `name`, `personalPlan`, `isPublic`), com semântica de PATCH, e devolver `User`.
+        Grava `profileCompletedAt` na primeira chamada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalProfileRequest' }
+      responses:
+        '200':
+          description: Perfil atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /personal/profile/update:
+    put:
+      tags: [Perfil]
+      summary: '[AJUSTAR] Atualizar perfil do Personal'
+      x-status: ajustar
+      description: |
+        **O que muda:** mesmo corpo de `/personal/profile/complete`, com semântica de PATCH (só os campos enviados mudam), e resposta `User`.
+        `personalPlan` **não** pode ser alterado aqui (ignorar se vier): só por `POST /personal/plan/upgrade`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalProfileRequest' }
+      responses:
+        '200':
+          description: Perfil atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /aluno/profile/complete:
+    post:
+      tags: [Perfil]
+      summary: '[AJUSTAR] Completar perfil do Aluno (onboarding)'
+      x-status: ajustar
+      description: |
+        **O que muda:** hoje exige `name` e `email`. Aceitar todos os campos de `StudentProfileRequest`, todos opcionais, com semântica de PATCH, e devolver `User`.
+        Grava `profileCompletedAt` na primeira chamada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudentProfileRequest' }
+      responses:
+        '200':
+          description: Perfil atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /aluno/profile/update:
+    put:
+      tags: [Perfil]
+      summary: '[AJUSTAR] Atualizar perfil do Aluno'
+      x-status: ajustar
+      description: |
+        **O que muda:** igual a `/aluno/profile/complete`: todos os campos opcionais, semântica de PATCH, resposta `User`.
+        Trocar `email` exige que o novo e-mail não esteja em uso (`409 EMAIL_TAKEN`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudentProfileRequest' }
+      responses:
+        '200':
+          description: Perfil atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '409':
+          description: '`EMAIL_TAKEN`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /aluno/profile/privacy:
+    put:
+      tags: [Perfil]
+      summary: '[FALTA] Visibilidade do histórico do aluno'
+      x-status: falta
+      description: Grava `isPublic` do aluno (`public` → `true`). Devolve `User`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visibility]
+              properties:
+                visibility: { type: string, enum: [private, public] }
+      responses:
+        '200':
+          description: Visibilidade atualizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /profile/photo:
+    post:
+      tags: [Perfil]
+      summary: '[FALTA] Trocar foto de perfil (Personal e Aluno)'
+      x-status: falta
+      description: |
+        1. `multipart/form-data` com o campo `file`. Aceitar só `image/jpeg`, `image/png`, `image/webp` (checar o conteúdo, não só o header). Máximo 10 MB.
+        2. Substitui a foto anterior (apagar o arquivo antigo).
+        3. Grava `photoUrl` no usuário apontando para `GET /photos/{photoId}/content` e devolve o `User`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Foto trocada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '413': { $ref: '#/components/responses/FileTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /photos/{photoId}/content:
+    get:
+      tags: [Perfil]
+      summary: '[FALTA] Conteúdo de uma foto'
+      x-status: falta
+      description: |
+        Devolve o binário da imagem com o `Content-Type` original e `Cache-Control: private, max-age=86400`.
+
+        Quem pode ver:
+        - Foto de perfil: qualquer usuário autenticado.
+        - Foto de progresso: o próprio aluno e o Personal com vínculo ativo.
+
+        Qualquer outro caso → `404 NOT_FOUND`. O app carrega a imagem com o header `Authorization`.
+      parameters:
+        - $ref: '#/components/parameters/PhotoId'
+      responses:
+        '200':
+          description: Imagem.
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Alunos do Personal
+  /personal/students:
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Listar meus alunos'
+      x-status: falta
+      description: Alunos com vínculo ativo **e** cadastros pendentes (`status = pending_signup`), ordenados por `name`.
+      responses:
+        '200':
+          description: Alunos.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StudentSummary' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+    post:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Cadastrar e vincular aluno'
+      x-status: falta
+      description: |
+        Regras, nesta ordem:
+
+        1. Checar o limite do plano (contando vínculos ativos e pendentes). Atingido → `403 PLAN_LIMIT_REACHED`.
+        2. **E-mail já é um aluno com vínculo ativo com outro Personal** → `409 ALREADY_LINKED`.
+        3. **E-mail já é um aluno com vínculo ativo comigo** → só atualiza os dados de agenda e cobrança e responde `200` com `relinked: true`.
+        4. **E-mail já é um aluno sem vínculo ativo** → cria o vínculo, responde `201` com `relinked: true`. Notificar o aluno (`link_confirmed`).
+        5. **E-mail já é de um Personal** → `409 EMAIL_TAKEN`.
+        6. **E-mail não existe** → **não** criar conta. Criar um vínculo pendente (`status = pending_signup`) guardando nome e e-mail. Quando alguém fizer signup como aluno com esse e-mail, o vínculo vira ativo automaticamente e o Personal recebe `link_confirmed`. Responder `201` com `relinked: false`.
+
+        Em todos os casos de sucesso, gravar `goal`, `days`, `time`, `paymentValue` no vínculo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateStudentRequest' }
+      responses:
+        '200':
+          description: Aluno já era meu; dados atualizados.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateStudentResponse' }
+        '201':
+          description: Vínculo criado (ativo ou pendente).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateStudentResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403':
+          description: '`FORBIDDEN_ROLE` ou `PLAN_LIMIT_REACHED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: '`ALREADY_LINKED` ou `EMAIL_TAKEN`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /personal/students/{studentId}:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Detalhe de um aluno'
+      x-status: falta
+      responses:
+        '200':
+          description: Aluno.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentSummary' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+    patch:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Editar dados do aluno no vínculo'
+      x-status: falta
+      description: |
+        Semântica de PATCH. O Personal edita só dados do **vínculo** (objetivo, nível, agenda, cobrança) e o `name` exibido.
+        O Personal **não** pode trocar o e-mail nem a senha do aluno.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateStudentRequest' }
+      responses:
+        '200':
+          description: Aluno atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentSummary' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+    delete:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Desvincular aluno'
+      x-status: falta
+      description: |
+        Encerra o vínculo (`endedAt = agora`); não apaga a conta do aluno nem os dados de saúde dele.
+        O treino vigente criado por este Personal é arquivado. Pendente de cadastro → apagar o vínculo pendente.
+      responses:
+        '204': { description: Vínculo encerrado. }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/billing:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    put:
+      tags: [Pagamentos simulados]
+      summary: '[FALTA] Cobrança mensal do aluno'
+      x-status: falta
+      description: |
+        Simulado: não cobra ninguém. Grava os campos no vínculo (semântica de PATCH) e devolve o aluno atualizado.
+        Quando `paymentStatus` muda de `pendente` para `pago`, criar notificação `payment_received` para o Personal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BillingRequest' }
+      responses:
+        '200':
+          description: Cobrança atualizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentSummary' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/anamnese:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Ler anamnese do aluno'
+      x-status: falta
+      description: Mesma resposta de `GET /aluno/anamnese`, para o Personal vinculado.
+      responses:
+        '200':
+          description: Anamnese.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Anamnesis' }
+        '404':
+          description: '`STUDENT_NOT_FOUND` ou `ANAMNESIS_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /personal/students/{studentId}/measurements:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Ler medidas do aluno'
+      x-status: falta
+      description: Mesma lista de `GET /aluno/measurements` (mais antiga primeiro), para o Personal vinculado.
+      responses:
+        '200':
+          description: Medidas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Measurement' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/photos:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Ler fotos de progresso do aluno'
+      x-status: falta
+      description: Mesma lista de `GET /aluno/photos`, para o Personal vinculado.
+      responses:
+        '200':
+          description: Fotos.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProgressPhoto' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/stats:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Alunos do Personal]
+      summary: '[FALTA] Ler estatísticas do aluno'
+      x-status: falta
+      description: Mesma resposta de `GET /aluno/stats`, para o Personal vinculado.
+      responses:
+        '200':
+          description: Estatísticas.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentStats' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/notifications:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    post:
+      tags: [Notificações]
+      summary: '[FALTA] Personal envia aviso para o aluno'
+      x-status: falta
+      description: Cria uma notificação `manual` para o aluno vinculado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, message]
+              properties:
+                title: { type: string, maxLength: 160 }
+                message: { type: string, maxLength: 4000 }
+      responses:
+        '201':
+          description: Aviso criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  # ---------------------------------------------------------------- Vínculo do aluno
+  /aluno/link:
+    get:
+      tags: [Vínculo do Aluno]
+      summary: '[FALTA] Meu Personal'
+      x-status: falta
+      description: Vínculo ativo do aluno, com os dados públicos do Personal. Sem vínculo → `404 NOT_FOUND`.
+      responses:
+        '200':
+          description: Vínculo ativo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentLink' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+    delete:
+      tags: [Vínculo do Aluno]
+      summary: '[FALTA] Aluno encerra o vínculo'
+      x-status: falta
+      description: Mesmo efeito de `DELETE /personal/students/{studentId}`, iniciado pelo aluno. Notifica o Personal.
+      responses:
+        '204': { description: Vínculo encerrado. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /aluno/vinculo/check:
+    get:
+      tags: [Vínculo do Aluno]
+      summary: '[FALTA] Buscar Personal pelo e-mail'
+      x-status: falta
+      description: |
+        O aluno digita o e-mail do Personal. Busca exata, sem diferenciar maiúsculas.
+        Só encontra usuários `role = personal`. Não encontrado → `404 NOT_FOUND`.
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema: { type: string, format: email }
+      responses:
+        '200':
+          description: Personal encontrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PersonalPreview' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /aluno/vinculo/confirm:
+    post:
+      tags: [Vínculo do Aluno]
+      summary: '[FALTA] Confirmar vínculo com o Personal'
+      x-status: falta
+      description: |
+        1. Aluno já tem vínculo ativo → `409 ALREADY_LINKED`.
+        2. Personal no limite do plano → `403 PLAN_LIMIT_REACHED`.
+        3. Cria o vínculo ativo, notifica o Personal (`link_confirmed`) e responde `201` com `StudentLink`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [personalId]
+              properties:
+                personalId: { type: integer }
+      responses:
+        '201':
+          description: Vínculo criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentLink' }
+        '403':
+          description: '`FORBIDDEN_ROLE` ou `PLAN_LIMIT_REACHED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`ALREADY_LINKED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------- Exercícios
+  /personal/exercises:
+    get:
+      tags: [Exercícios]
+      summary: '[FALTA] Catálogo de exercícios'
+      x-status: falta
+      description: |
+        Exercícios globais (`isCustom = false`, visíveis a todos os Personais) + os customizados **do próprio** Personal. Ordenar por `name`.
+
+        **Seed obrigatório** do catálogo global (o app usa estes nomes):
+        Supino Reto com Barra (Peito, Intermediário), Crossover Polia Alta (Peito, Avançado), Puxada Alta na Polia (Costas, Iniciante), Remada Baixa Sentada (Costas, Iniciante), Agachamento Livre Barra (Pernas, Avançado), Leg Press 45 Graus (Pernas, Intermediário), Desenvolvimento Halteres (Ombros, Intermediário), Rosca Direta com Barra W (Braços, Iniciante).
+      responses:
+        '200':
+          description: Catálogo.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Exercise' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+    post:
+      tags: [Exercícios]
+      summary: '[FALTA] Criar exercício customizado'
+      x-status: falta
+      description: Cria com `isCustom = true`, visível **só** para o Personal que criou. Nome repetido entre os customizados dele → `400 VALIDATION_ERROR`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExerciseRequest' }
+      responses:
+        '201':
+          description: Exercício criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exercise' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /personal/exercises/{exerciseId}:
+    parameters:
+      - $ref: '#/components/parameters/ExerciseId'
+    patch:
+      tags: [Exercícios]
+      summary: '[FALTA] Editar exercício customizado'
+      x-status: falta
+      description: Só os customizados do próprio Personal. Global ou de outro Personal → `404 NOT_FOUND`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExerciseRequest' }
+      responses:
+        '200':
+          description: Exercício atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exercise' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Exercícios]
+      summary: '[FALTA] Excluir exercício customizado'
+      x-status: falta
+      description: Só se não estiver em nenhum treino (vigente ou arquivado). Em uso → `409 EXERCISE_IN_USE`.
+      responses:
+        '204': { description: Excluído. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`EXERCISE_IN_USE`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------- Treino (Personal)
+  /personal/students/{studentId}/training:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    get:
+      tags: [Treino (Personal)]
+      summary: '[FALTA] Treino vigente do aluno'
+      x-status: falta
+      description: Sem treino vigente → `404 WORKOUT_NOT_FOUND`.
+      responses:
+        '200':
+          description: Treino vigente com exercícios ordenados por `split` e `order`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '404':
+          description: '`STUDENT_NOT_FOUND` ou `WORKOUT_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      tags: [Treino (Personal)]
+      summary: '[FALTA] Criar ou alterar a estrutura do treino'
+      x-status: falta
+      description: |
+        Cria o treino vigente se não existir (`201`), senão altera (`200`).
+
+        1. `division` são letras maiúsculas sem repetir, em ordem, de 1 a 7 (`A`, `AB`, `ABC`... `ABCDEFG`). Outro formato → `400`.
+        2. Se a nova `division` remover letras, **apagar** os exercícios prescritos nesses dias.
+        3. `splitLabels` só pode ter chaves que estão em `division`; letras sem label ficam `""`.
+        4. Incrementar `version`, gravar uma `Revision` e notificar o aluno (regra de notificação em `Workout`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkoutStructureRequest' }
+      responses:
+        '200':
+          description: Treino alterado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '201':
+          description: Treino criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/training/exercises:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+    post:
+      tags: [Treino (Personal)]
+      summary: '[FALTA] Prescrever exercício'
+      x-status: falta
+      description: |
+        1. Sem treino vigente → criar um automaticamente com `title = "Treino"`, `division = split` informado.
+        2. `split` precisa estar em `division`. Não está → `400`.
+        3. `exerciseId` precisa ser global ou customizado do próprio Personal. Senão → `404 NOT_FOUND`.
+        4. `order` padrão = último + 1 dentro do mesmo `split`.
+        5. Incrementar `version` do treino, gravar `Revision`, notificar o aluno.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrescribedExerciseRequest' }
+      responses:
+        '201':
+          description: Exercício prescrito.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrescribedExercise' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/StudentNotFound' }
+
+  /personal/students/{studentId}/training/exercises/{prescribedId}:
+    parameters:
+      - $ref: '#/components/parameters/StudentId'
+      - $ref: '#/components/parameters/PrescribedId'
+    patch:
+      tags: [Treino (Personal)]
+      summary: '[FALTA] Editar exercício prescrito'
+      x-status: falta
+      description: |
+        Semântica de PATCH (campos ausentes não mudam). Pode trocar o exercício (`exerciseId`), o dia (`split`) e a ordem.
+        Incrementar `version`, gravar `Revision`, notificar o aluno.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrescribedExercisePatch' }
+      responses:
+        '200':
+          description: Exercício atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrescribedExercise' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Treino (Personal)]
+      summary: '[FALTA] Remover exercício prescrito'
+      x-status: falta
+      description: Incrementar `version`, gravar `Revision`, notificar o aluno.
+      responses:
+        '204': { description: Removido. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Treino (Aluno)
+  /aluno/training:
+    get:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Meu treino vigente'
+      x-status: falta
+      description: Mesmo objeto de `GET /personal/students/{studentId}/training`. Sem treino → `404 WORKOUT_NOT_FOUND`.
+      responses:
+        '200':
+          description: Treino vigente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workout' }
+        '404':
+          description: '`WORKOUT_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /aluno/training/revisions:
+    get:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Histórico de versões do treino'
+      x-status: falta
+      description: Revisões do treino vigente, mais recente primeiro.
+      responses:
+        '200':
+          description: Revisões.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Revision' }
+
+  /aluno/sessions:
+    post:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Iniciar sessão de treino'
+      x-status: falta
+      description: |
+        Inicia a execução de um dia do treino vigente. `split` precisa estar na `division`.
+        Se houver uma sessão do aluno sem `finishedAt` iniciada há menos de 4 horas, devolver **essa** (`200`) em vez de criar outra.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [split]
+              properties:
+                split: { type: string, example: A }
+      responses:
+        '200':
+          description: Sessão aberta já existente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '201':
+          description: Sessão criada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404':
+          description: '`WORKOUT_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /aluno/sessions/{sessionId}/sets/{prescribedId}/{setIndex}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/PrescribedId'
+      - name: setIndex
+        in: path
+        required: true
+        description: Índice da série, começando em 0. Menor que `sets` do exercício prescrito.
+        schema: { type: integer, minimum: 0 }
+    put:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Marcar ou desmarcar série'
+      x-status: falta
+      description: |
+        **Upsert idempotente**: cria ou substitui o registro da série. Chamar duas vezes com o mesmo corpo dá o mesmo resultado (nunca `409`).
+        O app chama a cada toque no checkbox da série. Sessão finalizada → `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetLogRequest' }
+      responses:
+        '200':
+          description: Série gravada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SetLog' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /aluno/sessions/{sessionId}/finish:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Finalizar sessão'
+      x-status: falta
+      description: Grava `finishedAt`, `durationSeconds` e `feedback`. Notifica o Personal (`workout_completed`). Já finalizada → devolve como está.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                feedback: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: Sessão finalizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /aluno/stats:
+    get:
+      tags: [Treino (Aluno)]
+      summary: '[FALTA] Minhas estatísticas'
+      x-status: falta
+      description: |
+        Calcular em America/Sao_Paulo. Semana = segunda a domingo.
+
+        - `totalSessions`: sessões finalizadas desde sempre.
+        - `sessionsThisWeek`: sessões finalizadas na semana atual.
+        - `weeklyGoal`: `daysPerWeek` do perfil do aluno (padrão 3).
+        - `consecutiveWeeks`: semanas seguidas, até a atual, com `sessionsThisWeek >= weeklyGoal` (a atual só conta se já bateu a meta).
+        - `weekDays`: os 7 dias da semana atual; `trained = true` se houve sessão finalizada naquele dia.
+      responses:
+        '200':
+          description: Estatísticas.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentStats' }
+
+  # ---------------------------------------------------------------- Saúde (Aluno)
+  /aluno/anamnese:
+    get:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Minha anamnese'
+      x-status: falta
+      description: Não preenchida → `404 ANAMNESIS_NOT_FOUND`. O app bloqueia o treino até ela existir.
+      responses:
+        '200':
+          description: Anamnese.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Anamnesis' }
+        '404':
+          description: '`ANAMNESIS_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Salvar anamnese'
+      x-status: falta
+      description: Cria ou substitui (PUT completo). Na primeira vez, notificar o Personal vinculado (`anamnesis_completed`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnamnesisRequest' }
+      responses:
+        '200':
+          description: Anamnese salva.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Anamnesis' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /aluno/measurements:
+    get:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Minhas medidas'
+      x-status: falta
+      description: Ordenadas por `measuredAt` crescente (mais antiga primeiro), depois por `id`.
+      responses:
+        '200':
+          description: Medidas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Measurement' }
+    post:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Registrar medidas'
+      x-status: falta
+      description: |
+        Pelo menos um campo de medida além de `measuredAt`. `measuredAt` ausente = hoje (America/Sao_Paulo).
+        Notificar o Personal vinculado (`measurement_added`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MeasurementRequest' }
+      responses:
+        '201':
+          description: Medidas registradas.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Measurement' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /aluno/measurements/{measurementId}:
+    parameters:
+      - name: measurementId
+        in: path
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Apagar registro de medidas'
+      x-status: falta
+      responses:
+        '204': { description: Apagado. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /aluno/photos:
+    get:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Minhas fotos de progresso'
+      x-status: falta
+      description: Ordenadas por `takenAt` crescente, depois `angle` (front, side, back).
+      responses:
+        '200':
+          description: Fotos.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProgressPhoto' }
+    post:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Enviar foto de progresso'
+      x-status: falta
+      description: |
+        Uma foto por chamada. O app envia até 3 (frente, lado, costas) com o mesmo `takenAt`.
+        Mesmas regras de arquivo de `/profile/photo`. Limite de 90 fotos por aluno → `409 PHOTO_LIMIT_REACHED`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, angle]
+              properties:
+                file: { type: string, format: binary }
+                angle: { type: string, enum: [front, side, back] }
+                takenAt: { type: string, format: date, description: 'Padrão: hoje.' }
+                label: { type: string, maxLength: 60, example: 'Início' }
+      responses:
+        '201':
+          description: Foto criada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProgressPhoto' }
+        '409':
+          description: '`PHOTO_LIMIT_REACHED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413': { $ref: '#/components/responses/FileTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /aluno/photos/{photoId}:
+    parameters:
+      - $ref: '#/components/parameters/PhotoId'
+    delete:
+      tags: [Saúde e evolução (Aluno)]
+      summary: '[FALTA] Apagar foto de progresso'
+      x-status: falta
+      description: Apaga o registro e o arquivo.
+      responses:
+        '204': { description: Apagada. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Notificações
+  /notifications:
+    get:
+      tags: [Notificações]
+      summary: '[FALTA] Minhas notificações'
+      x-status: falta
+      description: Do usuário logado (Personal ou Aluno), mais recente primeiro, no máximo as últimas 100.
+      responses:
+        '200':
+          description: Notificações.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Notification' }
+
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notificações]
+      summary: '[FALTA] Marcar como lida'
+      x-status: falta
+      description: Grava `readAt` se ainda for `null`. Notificação de outro usuário → `404`.
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '204': { description: Marcada. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications/read-all:
+    post:
+      tags: [Notificações]
+      summary: '[FALTA] Marcar todas como lidas'
+      x-status: falta
+      responses:
+        '204': { description: Todas marcadas. }
+
+  # ---------------------------------------------------------------- Personal
+  /personal/dashboard:
+    get:
+      tags: [Personal]
+      summary: '[FALTA] Painel do Personal'
+      x-status: falta
+      description: |
+        - `totalStudents`: vínculos ativos + pendentes.
+        - `activeStudents`: vínculos ativos com sessão finalizada nos últimos 7 dias.
+        - `pendingAnamnesis`: vínculos ativos sem anamnese.
+        - `studentsWithoutWorkout`: vínculos ativos sem treino vigente.
+        - `recentActivity`: últimas 10 notificações do Personal.
+      responses:
+        '200':
+          description: Painel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dashboard' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /personal/referrals:
+    get:
+      tags: [Personal]
+      summary: '[FALTA] Minhas indicações'
+      x-status: falta
+      description: |
+        `credits` mais recente primeiro. `totalDiscount` soma `credit` de todos, em reais.
+        Um crédito vira `applied` quando o Personal indicado tem o primeiro pagamento aprovado em `/personal/plan/upgrade`.
+      responses:
+        '200':
+          description: Indicações.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReferralSummary' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /referrals/preview:
+    get:
+      tags: [Personal]
+      summary: '[FALTA] Validar código de indicação (público)'
+      x-status: falta
+      description: |
+        **Sem autenticação**: o código é digitado na tela de cadastro, antes de existir conta.
+        Sem diferenciar maiúsculas. Nunca devolver e-mail ou id do dono. Aplicar rate limit de 30 req/min por IP.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, example: JWAFQGV7 }
+      responses:
+        '200':
+          description: Resultado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+                  ownerName: { type: string, nullable: true, example: Vitória Neri }
+
+  # ---------------------------------------------------------------- Pagamentos
+  /personal/plan/upgrade:
+    post:
+      tags: [Pagamentos simulados]
+      summary: '[FALTA] Trocar plano do Personal'
+      x-status: falta
+      description: |
+        Simulado: aprova sempre. **Precisa gravar** `personalPlan` no usuário e devolver o `User` atualizado.
+        Downgrade para um plano com limite menor que os alunos atuais → `403 PLAN_LIMIT_REACHED` (não desvincular ninguém).
+        Primeiro pagamento aprovado de `pro`/`unlimited` marca o `Referral` correspondente como `applied`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan]
+              properties:
+                plan: { type: string, enum: [free, pro, unlimited] }
+      responses:
+        '200':
+          description: Plano trocado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403':
+          description: '`FORBIDDEN_ROLE` ou `PLAN_LIMIT_REACHED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /aluno/consultoria/checkout:
+    post:
+      tags: [Pagamentos simulados]
+      summary: '[FALTA] Contratar consultoria online'
+      x-status: falta
+      description: |
+        Simulado: aprova sempre.
+
+        1. Aluno com vínculo ativo → `409 ALREADY_LINKED`.
+        2. Vincular o aluno ao Personal oficial da consultoria, cujo id vem da variável de ambiente `OFFICIAL_PERSONAL_ID`. Esse vínculo **não** conta no limite de plano.
+        3. Gravar a assinatura: `startsAt = hoje`, `endsAt` = +1, +3 ou +6 meses.
+        4. Responder `200` com `ConsultoriaCheckoutResponse`.
+
+        Preços (só exibição): mensal R$ 99,90 · trimestral R$ 279,90 · semestral R$ 569,90.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, paymentMethod]
+              properties:
+                plan: { type: string, enum: [mensal, trimestral, semestral] }
+                paymentMethod: { type: string, enum: [pix, card] }
+      responses:
+        '200':
+          description: Contratado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultoriaCheckoutResponse' }
+        '409':
+          description: '`ALREADY_LINKED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------- Suporte
+  /support/tickets:
+    post:
+      tags: [Suporte]
+      summary: '[FALTA] Abrir ticket de suporte'
+      x-status: falta
+      description: Personal ou Aluno. Gravar quem abriu (id, papel, e-mail) a partir do token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, message]
+              properties:
+                category: { type: string, enum: ['Dúvida', 'Reclamação', 'Elogio', 'Sugestão', 'Feedback'] }
+                message: { type: string, minLength: 1, maxLength: 4000 }
+      responses:
+        '201':
+          description: Ticket criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    StudentId:
+      name: studentId
+      in: path
+      required: true
+      description: '`id` do aluno (`StudentSummary.id`). Para cadastro pendente, é o `id` do vínculo pendente.'
+      schema: { type: integer }
+    ExerciseId:
+      name: exerciseId
+      in: path
+      required: true
+      schema: { type: integer }
+    PrescribedId:
+      name: prescribedId
+      in: path
+      required: true
+      description: '`id` do `PrescribedExercise` (não do `Exercise` do catálogo).'
+      schema: { type: integer }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: integer }
+    PhotoId:
+      name: photoId
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    ValidationError:
+      description: '`VALIDATION_ERROR`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'password must have at least 8 characters', code: VALIDATION_ERROR }
+    Unauthorized:
+      description: '`UNAUTHORIZED`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ForbiddenRole:
+      description: '`FORBIDDEN_ROLE`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: '`NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    StudentNotFound:
+      description: '`STUDENT_NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    FileTooLarge:
+      description: '`FILE_TOO_LARGE`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedMediaType:
+      description: '`UNSUPPORTED_MEDIA_TYPE`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, example: 'email is already registered' }
+        code: { type: string, example: EMAIL_TAKEN }
+
+    # ---- Auth
+    SignupRequest:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120, example: Vitória Neri }
+        email: { type: string, format: email, description: 'Gravar em minúsculas e sem espaços.' }
+        password: { type: string, format: password, minLength: 8 }
+        role: { type: string, enum: [personal, aluno] }
+        personalPlan: { type: string, enum: [free, pro, unlimited], description: 'Só para personal. Padrão free.' }
+        referralCode: { type: string, description: 'Só para personal. Opcional.' }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token: { type: string, description: JWT }
+        user: { $ref: '#/components/schemas/User' }
+    SignupResponse:
+      allOf:
+        - $ref: '#/components/schemas/AuthResponse'
+        - type: object
+          required: [referralApplied]
+          properties:
+            referralApplied: { type: boolean }
+            referrerName: { type: string, nullable: true }
+    TokenResponse:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string }
+
+    # ---- Usuário
+    User:
+      type: object
+      description: |
+        Usuário completo. Campos de Personal são `null` para aluno e vice-versa.
+        Sempre devolver **todas** as chaves (com `null` quando vazio), nunca omitir.
+      required: [id, name, email, role, isPublic, photoUrl, phone, profileCompletedAt, createdAt]
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: Vitória Neri }
+        email: { type: string, format: email }
+        role: { type: string, enum: [personal, aluno] }
+        isPublic: { type: boolean, description: 'Personal: aparece em buscas. Aluno: histórico visível.' }
+        photoUrl: { type: string, nullable: true, example: '/photos/12/content' }
+        phone: { type: string, nullable: true, example: '+5511999999999' }
+        profileCompletedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        personalPlan: { type: string, enum: [free, pro, unlimited], nullable: true }
+        referralCode: { type: string, nullable: true, example: JWAFQGV7 }
+        cref: { type: string, nullable: true, example: '045982-G/SP' }
+        biography: { type: string, nullable: true, maxLength: 2000 }
+        experience: { type: string, nullable: true, enum: ['menos de 1 ano', '1-3 anos', '3-5 anos', 'mais de 5 anos'] }
+        specializations: { type: array, nullable: true, items: { type: string }, example: [hipertrofia, condicionamento] }
+        modality: { type: string, nullable: true, enum: [online, presencial, ambos] }
+        methods: { type: array, nullable: true, items: { type: string }, example: [rir, dropset] }
+        trainingSplits: { type: array, nullable: true, items: { type: string }, example: [abc, ppl] }
+        goal: { type: string, nullable: true, example: hipertrofia }
+        level: { type: string, nullable: true, enum: [iniciante, intermediario, avancado] }
+        daysPerWeek: { type: integer, nullable: true, minimum: 1, maximum: 7 }
+        restrictions: { type: string, nullable: true, maxLength: 2000 }
+    PersonalProfileRequest:
+      type: object
+      description: Todos opcionais. Semântica de PATCH.
+      properties:
+        name: { type: string }
+        phone: { type: string, nullable: true }
+        isPublic: { type: boolean }
+        personalPlan: { type: string, enum: [free, pro, unlimited], description: 'Aceito só em /complete. Ignorado em /update.' }
+        cref: { type: string, nullable: true }
+        biography: { type: string, nullable: true, maxLength: 2000 }
+        experience: { type: string, enum: ['menos de 1 ano', '1-3 anos', '3-5 anos', 'mais de 5 anos'] }
+        specializations: { type: array, items: { type: string } }
+        modality: { type: string, enum: [online, presencial, ambos] }
+        methods: { type: array, items: { type: string } }
+        trainingSplits: { type: array, items: { type: string } }
+    StudentProfileRequest:
+      type: object
+      description: Todos opcionais. Semântica de PATCH.
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        goal: { type: string, example: hipertrofia }
+        level: { type: string, enum: [iniciante, intermediario, avancado] }
+        daysPerWeek: { type: integer, minimum: 1, maximum: 7 }
+        restrictions: { type: string, nullable: true, maxLength: 2000 }
+
+    # ---- Alunos / vínculo
+    StudentSummary:
+      type: object
+      description: Aluno visto pelo Personal. Junta dados do usuário com dados do vínculo.
+      required: [id, linkId, status, name, email, phone, photoUrl, goal, level, days, time, paymentValue, paymentStatus, paymentDueDay, anamnesisCompleted, hasWorkout, lastActivityAt, linkedAt]
+      properties:
+        id: { type: integer, description: 'Id do aluno; para pending_signup, o id do vínculo pendente.' }
+        linkId: { type: integer }
+        status: { type: string, enum: [active, pending_signup] }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        photoUrl: { type: string, nullable: true }
+        goal: { type: string, nullable: true, example: Hipertrofia }
+        level: { type: string, nullable: true, enum: [iniciante, intermediario, avancado] }
+        days: { type: array, items: { type: string, enum: [Seg, Ter, Qua, Qui, Sex, Sáb, Dom] } }
+        time: { type: string, nullable: true, pattern: '^\d{2}:\d{2}$', example: '07:00' }
+        paymentValue: { type: number, format: double, nullable: true, example: 120.0 }
+        paymentStatus: { type: string, enum: [pago, pendente] }
+        paymentDueDay: { type: integer, nullable: true, minimum: 1, maximum: 31, example: 10 }
+        anamnesisCompleted: { type: boolean }
+        hasWorkout: { type: boolean }
+        lastActivityAt: { type: string, format: date-time, nullable: true, description: 'Última sessão finalizada.' }
+        linkedAt: { type: string, format: date-time }
+    CreateStudentRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        goal: { type: string, example: Hipertrofia }
+        days: { type: array, items: { type: string, enum: [Seg, Ter, Qua, Qui, Sex, Sáb, Dom] } }
+        time: { type: string, example: '08:00' }
+        paymentValue: { type: number, format: double, example: 120.0 }
+    CreateStudentResponse:
+      type: object
+      required: [relinked, student]
+      properties:
+        relinked: { type: boolean, description: 'true quando o e-mail já era de um aluno com conta.' }
+        student: { $ref: '#/components/schemas/StudentSummary' }
+    UpdateStudentRequest:
+      type: object
+      description: Todos opcionais. Semântica de PATCH.
+      properties:
+        name: { type: string }
+        goal: { type: string }
+        level: { type: string, enum: [iniciante, intermediario, avancado] }
+        days: { type: array, items: { type: string, enum: [Seg, Ter, Qua, Qui, Sex, Sáb, Dom] } }
+        time: { type: string, nullable: true }
+        paymentValue: { type: number, format: double, nullable: true }
+    BillingRequest:
+      type: object
+      description: Todos opcionais. Semântica de PATCH.
+      properties:
+        paymentValue: { type: number, format: double }
+        paymentStatus: { type: string, enum: [pago, pendente] }
+        paymentDueDay: { type: integer, minimum: 1, maximum: 31 }
+        days: { type: array, items: { type: string, enum: [Seg, Ter, Qua, Qui, Sex, Sáb, Dom] } }
+    PersonalPreview:
+      type: object
+      required: [id, name, email, photoUrl, cref]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        photoUrl: { type: string, nullable: true }
+        cref: { type: string, nullable: true }
+    StudentLink:
+      type: object
+      required: [id, personal, startedAt, origin]
+      properties:
+        id: { type: integer }
+        personal: { $ref: '#/components/schemas/PersonalPreview' }
+        startedAt: { type: string, format: date-time }
+        origin: { type: string, enum: [personal_invite, student_confirm, consultoria] }
+
+    # ---- Exercícios
+    ExerciseRequest:
+      type: object
+      required: [name, muscleGroup]
+      properties:
+        name: { type: string, maxLength: 120 }
+        muscleGroup: { type: string, enum: [Peito, Costas, Ombros, Braços, Pernas, Glúteos, Abdômen, Cardio, Outros] }
+        level: { type: string, enum: [Iniciante, Intermediário, Avançado], default: Intermediário }
+        videoUrl: { type: string, format: uri, nullable: true }
+        notes: { type: string, nullable: true, maxLength: 2000 }
+    Exercise:
+      allOf:
+        - $ref: '#/components/schemas/ExerciseRequest'
+        - type: object
+          required: [id, isCustom]
+          properties:
+            id: { type: integer }
+            isCustom: { type: boolean }
+
+    # ---- Treino
+    WorkoutStructureRequest:
+      type: object
+      required: [division]
+      properties:
+        title: { type: string, maxLength: 120, default: Treino }
+        division: { type: string, pattern: '^[A-G]{1,7}$', example: ABC }
+        splitLabels:
+          type: object
+          additionalProperties: { type: string, maxLength: 60 }
+          example: { A: Peito e Tríceps, B: Pernas, C: Costas e Bíceps }
+    Workout:
+      type: object
+      description: |
+        Um aluno tem no máximo **um** treino vigente. Criar outro arquiva o anterior.
+
+        **Notificação ao aluno:** a primeira criação gera `workout_created`. Alterações geram `workout_updated`, no máximo **uma a cada 10 minutos** por aluno (o Personal faz várias edições seguidas).
+      required: [id, studentId, title, division, splitLabels, version, createdAt, updatedAt, exercises]
+      properties:
+        id: { type: integer }
+        studentId: { type: integer }
+        createdBy: { type: integer, description: Id do Personal. }
+        title: { type: string, example: Treino }
+        division: { type: string, example: ABC }
+        splitLabels:
+          type: object
+          additionalProperties: { type: string }
+          example: { A: Peito e Tríceps, B: Pernas, C: Costas e Bíceps }
+        version: { type: integer, example: 3 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        exercises:
+          type: array
+          items: { $ref: '#/components/schemas/PrescribedExercise' }
+    PrescribedExerciseRequest:
+      type: object
+      required: [exerciseId, split, sets, reps]
+      properties:
+        exerciseId: { type: integer, description: Id do exercício no catálogo. }
+        split: { type: string, pattern: '^[A-G]$', example: A }
+        order: { type: integer, minimum: 0 }
+        sets: { type: integer, minimum: 1, maximum: 20, example: 4 }
+        reps: { type: string, maxLength: 20, example: '8-10' }
+        intensityMethod: { type: string, nullable: true, maxLength: 120, example: 'Drop-set na última série' }
+        weight: { type: string, nullable: true, maxLength: 20, example: '70kg' }
+        rest: { type: string, nullable: true, maxLength: 20, example: '90s' }
+        observations: { type: string, nullable: true, maxLength: 2000 }
+        videoUrl: { type: string, format: uri, nullable: true, description: 'Sobrescreve o vídeo do catálogo só nesta prescrição.' }
+    PrescribedExercisePatch:
+      type: object
+      description: Mesmos campos de `PrescribedExerciseRequest`, todos opcionais.
+      properties:
+        exerciseId: { type: integer }
+        split: { type: string, pattern: '^[A-G]$' }
+        order: { type: integer, minimum: 0 }
+        sets: { type: integer, minimum: 1, maximum: 20 }
+        reps: { type: string }
+        intensityMethod: { type: string, nullable: true }
+        weight: { type: string, nullable: true }
+        rest: { type: string, nullable: true }
+        observations: { type: string, nullable: true }
+        videoUrl: { type: string, format: uri, nullable: true }
+    PrescribedExercise:
+      type: object
+      required: [id, workoutId, exerciseId, name, muscleGroup, split, order, sets, reps, intensityMethod, weight, rest, observations, videoUrl]
+      properties:
+        id: { type: integer }
+        workoutId: { type: integer }
+        exerciseId: { type: integer }
+        name: { type: string, description: Copiado do catálogo. }
+        muscleGroup: { type: string, description: Copiado do catálogo. }
+        split: { type: string, example: A }
+        order: { type: integer }
+        sets: { type: integer }
+        reps: { type: string }
+        intensityMethod: { type: string, nullable: true }
+        weight: { type: string, nullable: true }
+        rest: { type: string, nullable: true }
+        observations: { type: string, nullable: true }
+        videoUrl: { type: string, nullable: true, description: 'O da prescrição, senão o do catálogo.' }
+    Revision:
+      type: object
+      required: [id, workoutId, version, changedBy, snapshot, createdAt]
+      properties:
+        id: { type: integer }
+        workoutId: { type: integer }
+        version: { type: integer }
+        changedBy: { type: integer }
+        snapshot: { $ref: '#/components/schemas/Workout' }
+        createdAt: { type: string, format: date-time }
+    Session:
+      type: object
+      required: [id, workoutId, workoutVersion, split, startedAt, finishedAt, durationSeconds, feedback, sets]
+      properties:
+        id: { type: integer }
+        workoutId: { type: integer }
+        workoutVersion: { type: integer }
+        split: { type: string, example: A }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        durationSeconds: { type: integer, nullable: true }
+        feedback: { type: string, nullable: true }
+        sets:
+          type: array
+          items: { $ref: '#/components/schemas/SetLog' }
+    SetLogRequest:
+      type: object
+      required: [completed]
+      properties:
+        completed: { type: boolean }
+        load: { type: string, nullable: true, maxLength: 20, example: '72kg' }
+        reps: { type: integer, nullable: true, minimum: 0 }
+    SetLog:
+      type: object
+      required: [sessionId, prescribedId, setIndex, completed, load, reps, recordedAt]
+      properties:
+        sessionId: { type: integer }
+        prescribedId: { type: integer }
+        setIndex: { type: integer }
+        completed: { type: boolean }
+        load: { type: string, nullable: true }
+        reps: { type: integer, nullable: true }
+        recordedAt: { type: string, format: date-time }
+    StudentStats:
+      type: object
+      required: [totalSessions, sessionsThisWeek, weeklyGoal, consecutiveWeeks, completedSets, lastActivityAt, weekDays]
+      properties:
+        totalSessions: { type: integer, example: 48 }
+        sessionsThisWeek: { type: integer, example: 2 }
+        weeklyGoal: { type: integer, example: 4 }
+        consecutiveWeeks: { type: integer, example: 6 }
+        completedSets: { type: integer, example: 912 }
+        lastActivityAt: { type: string, format: date-time, nullable: true }
+        weekDays:
+          type: array
+          minItems: 7
+          maxItems: 7
+          items:
+            type: object
+            required: [day, date, trained]
+            properties:
+              day: { type: string, enum: [Seg, Ter, Qua, Qui, Sex, Sáb, Dom] }
+              date: { type: string, format: date }
+              trained: { type: boolean }
+
+    # ---- Saúde
+    AnamnesisRequest:
+      type: object
+      required: [experience, customGoal, dailyTrainingTime, hasBoneJointRisk, hasCardioRiskFamily, hasCardioRisk, usesMedication]
+      properties:
+        experience: { type: string, example: Intermediário }
+        customGoal: { type: string, maxLength: 200, example: Hipertrofia muscular }
+        dailyTrainingTime: { type: string, example: '1h00' }
+        hasBoneJointRisk: { type: boolean }
+        boneJointDetails: { type: string, nullable: true, maxLength: 2000 }
+        hasCardioRiskFamily: { type: boolean }
+        hasCardioRisk: { type: boolean }
+        usesMedication: { type: boolean }
+        medicationDetails: { type: string, nullable: true, maxLength: 2000 }
+        dietPlan: { type: string, nullable: true, maxLength: 2000 }
+    Anamnesis:
+      allOf:
+        - $ref: '#/components/schemas/AnamnesisRequest'
+        - type: object
+          required: [studentId, updatedAt]
+          properties:
+            studentId: { type: integer }
+            updatedAt: { type: string, format: date-time }
+    MeasurementRequest:
+      type: object
+      description: Todas as medidas em cm, peso em kg, gordura em %. Pelo menos uma medida.
+      properties:
+        measuredAt: { type: string, format: date }
+        weight: { type: number, format: double, minimum: 20, maximum: 400, example: 80.5 }
+        bodyFat: { type: number, format: double, minimum: 2, maximum: 70, example: 14.2 }
+        chest: { type: number, format: double, minimum: 30, maximum: 250, example: 102 }
+        waist: { type: number, format: double, minimum: 30, maximum: 250, example: 81 }
+        arm: { type: number, format: double, minimum: 10, maximum: 80, example: 38.5 }
+        hips: { type: number, format: double, minimum: 30, maximum: 250, example: 96 }
+        thigh: { type: number, format: double, minimum: 20, maximum: 120, example: 58 }
+        calf: { type: number, format: double, minimum: 15, maximum: 80, example: 37.5 }
+    Measurement:
+      type: object
+      description: Campos de medida não informados voltam `null`.
+      required: [id, studentId, measuredAt, weight, bodyFat, chest, waist, arm, hips, thigh, calf, createdAt]
+      properties:
+        id: { type: integer }
+        studentId: { type: integer }
+        measuredAt: { type: string, format: date }
+        weight: { type: number, format: double, nullable: true }
+        bodyFat: { type: number, format: double, nullable: true }
+        chest: { type: number, format: double, nullable: true }
+        waist: { type: number, format: double, nullable: true }
+        arm: { type: number, format: double, nullable: true }
+        hips: { type: number, format: double, nullable: true }
+        thigh: { type: number, format: double, nullable: true }
+        calf: { type: number, format: double, nullable: true }
+        createdAt: { type: string, format: date-time }
+    ProgressPhoto:
+      type: object
+      required: [id, studentId, angle, takenAt, label, url, mimeType, size, createdAt]
+      properties:
+        id: { type: integer }
+        studentId: { type: integer }
+        angle: { type: string, enum: [front, side, back] }
+        takenAt: { type: string, format: date }
+        label: { type: string, nullable: true }
+        url: { type: string, example: '/photos/31/content' }
+        mimeType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        size: { type: integer, maximum: 10485760 }
+        createdAt: { type: string, format: date-time }
+
+    # ---- Notificações / Personal
+    Notification:
+      type: object
+      required: [id, type, title, message, data, createdAt, readAt]
+      properties:
+        id: { type: integer }
+        type:
+          type: string
+          enum: [manual, link_confirmed, link_ended, workout_created, workout_updated, workout_completed, anamnesis_completed, measurement_added, payment_received]
+          description: |
+            Quem recebe:
+            - Aluno: `manual`, `link_confirmed`, `link_ended`, `workout_created`, `workout_updated`.
+            - Personal: `link_confirmed`, `link_ended`, `workout_completed`, `anamnesis_completed`, `measurement_added`, `payment_received`.
+        title: { type: string, example: Novo treino disponível }
+        message: { type: string, example: Vitória Neri enviou um novo treino para você. }
+        data:
+          type: object
+          description: Ids relacionados para o app abrir a tela certa. Chaves ausentes quando não se aplicam.
+          properties:
+            studentId: { type: integer }
+            personalId: { type: integer }
+            workoutId: { type: integer }
+            sessionId: { type: integer }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time, nullable: true }
+    Dashboard:
+      type: object
+      required: [totalStudents, activeStudents, pendingAnamnesis, studentsWithoutWorkout, maxStudents, recentActivity]
+      properties:
+        totalStudents: { type: integer }
+        activeStudents: { type: integer }
+        pendingAnamnesis: { type: integer }
+        studentsWithoutWorkout: { type: integer }
+        maxStudents: { type: integer, nullable: true, description: 'null = ilimitado.' }
+        recentActivity:
+          type: array
+          items: { $ref: '#/components/schemas/Notification' }
+    ReferralSummary:
+      type: object
+      required: [code, totalDiscount, referredCount, credits]
+      properties:
+        code: { type: string, example: JWAFQGV7 }
+        totalDiscount: { type: number, format: double, example: 15.0 }
+        referredCount: { type: integer, example: 3 }
+        credits:
+          type: array
+          items:
+            type: object
+            required: [id, name, date, credit, status]
+            properties:
+              id: { type: integer }
+              name: { type: string, description: Nome do Personal indicado. Nunca o e-mail. }
+              date: { type: string, format: date-time }
+              credit: { type: number, format: double, example: 5.0 }
+              status: { type: string, enum: [pending, applied] }
+    ConsultoriaCheckoutResponse:
+      type: object
+      required: [transactionId, status, plan, startsAt, endsAt, link]
+      properties:
+        transactionId: { type: string, example: sim_8f2c1a }
+        status: { type: string, enum: [approved] }
+        plan: { type: string, enum: [mensal, trimestral, semestral] }
+        startsAt: { type: string, format: date }
+        endsAt: { type: string, format: date }
+        link: { $ref: '#/components/schemas/StudentLink' }
+    SupportTicket:
+      type: object
+      required: [id, category, message, status, createdAt]
+      properties:
+        id: { type: integer }
+        category: { type: string }
+        message: { type: string }
+        status: { type: string, enum: [open, answered, closed] }
+        createdAt: { type: string, format: date-time }
