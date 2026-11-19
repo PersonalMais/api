@@ -14,21 +14,19 @@ info:
     | **[AJUSTAR]** | Existe, mas tem bug ou diferença. O que corrigir está no topo da descrição da operação. |
     | **[FALTA]** | Não existe. Implementar exatamente como descrito. |
 
-    ## Situação em 19/11/2026
+    ## Situação em 19/11/2026 (2ª verificação)
 
-    Das 62 operações, 60 já existem e quase todas respondem exatamente como este contrato. Pendências:
+    Das 62 operações, todas já existem. Pendências:
 
     | # | Pendência | Onde |
     | --- | --- | --- |
-    | 1 | `GET`, `PATCH` e `DELETE /personal/students/{studentId}` dão **500**: a rota usa `studentId` e a função espera `student_id`. O Personal não consegue abrir, editar nem desvincular aluno. | Alunos do Personal |
-    | 2 | Upload de foto dá **500** `Invalid endpoint:` em `POST /profile/photo` e `POST /aluno/photos`. O endpoint do Garage não está configurado (`garage_storage.py`, linha 10). | Perfil, Saúde |
-    | 3 | `GET /aluno/stats` e `GET /personal/students/{studentId}/stats` **não existem** (404). | Treino (Aluno), Alunos do Personal |
-    | 4 | `hasWorkout` vem `false` mesmo com treino vigente criado. | `StudentSummary` |
-    | 5 | Erros 500 devolvem o **traceback** do Python no corpo (`traceback`). Devolver só `{"error", "code": "INTERNAL_SERVER_ERROR"}` e logar o resto no servidor. | Todos |
-    | 6 | `GET /list/database-examples.json` é **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
-    | 7 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). | Todos |
-    | 8 | O `/openapi.json` documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação para os schemas deste contrato. | Documentação |
-    | 9 | **Decidir o limite do plano `pro`:** o app mostra 5 alunos, o backend aplica 15. Os dois precisam usar o mesmo número. | Limites de plano |
+    | 1 | Upload de foto responde **502** `STORAGE_UNAVAILABLE` ("file storage is unavailable") em `POST /profile/photo` e `POST /aluno/photos`. O armazenamento (Garage) segue fora do ar ou sem configuração. Por isso `GET /photos/{photoId}/content` ainda não foi testado. | Perfil, Saúde |
+    | 2 | `GET /list/database-examples.json` continua **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
+    | 3 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). | Todos |
+    | 4 | O `/openapi.json` ainda documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação para os schemas deste contrato. | Documentação |
+    | 5 | **Decidir o limite do plano `pro`:** o app mostra 5 alunos, o backend aplica 15. Os dois precisam usar o mesmo número. | Limites de plano |
+
+    Resolvido desde a 1ª verificação: `GET`/`PATCH`/`DELETE /personal/students/{studentId}` (era 500), `GET /aluno/stats` e `GET /personal/students/{studentId}/stats` (não existiam), `hasWorkout` (vinha sempre `false`) e erros sem traceback no corpo (o erro de upload agora vem limpo).
 
     ## Convenções (valem para todos os endpoints)
 
@@ -46,7 +44,7 @@ info:
 
     ## Fora do contrato
 
-    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 6).
+    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 2).
 
     ## Códigos de erro
 
@@ -441,7 +439,7 @@ paths:
       summary: '[AJUSTAR] Trocar foto de perfil (Personal e Aluno)'
       x-status: ajustar
       description: |
-        **O que corrigir:** responde **500** `Invalid endpoint:` ao criar o cliente do Garage (`file_storage/garage_storage.py`, linha 10). Configurar o endpoint do armazenamento em produção.
+        **O que corrigir:** responde **502** `{"code": "STORAGE_UNAVAILABLE", "error": "file storage is unavailable"}`. O armazenamento de arquivos (Garage) está fora do ar ou sem configuração em produção.
 
         1. `multipart/form-data` com o campo `file`. Aceitar só `image/jpeg`, `image/png`, `image/webp` (checar o conteúdo, não só o header). Máximo 10 MB.
         2. Substitui a foto anterior (apagar o arquivo antigo).
@@ -476,7 +474,7 @@ paths:
       summary: '[AJUSTAR] Conteúdo de uma foto'
       x-status: ajustar
       description: |
-        **O que corrigir:** não deu para testar porque o upload está quebrado (`POST /profile/photo`). Conferir depois de corrigir o upload, incluindo o acesso do Personal às fotos de progresso.
+        **O que corrigir:** ainda não deu para testar porque o upload está fora do ar (`POST /profile/photo` responde 502). Conferir depois de corrigir o upload, incluindo o acesso do Personal às fotos de progresso.
 
         Devolve o binário da imagem com o `Content-Type` original e `Cache-Control: private, max-age=86400`.
 
@@ -509,11 +507,9 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[AJUSTAR] Listar meus alunos'
-      x-status: ajustar
+      summary: '[OK] Listar meus alunos'
+      x-status: ok
       description: |
-        **O que corrigir:** `hasWorkout` vem `false` mesmo quando o aluno já tem treino vigente (testado: treino criado com `PUT .../training` e a lista continuou com `hasWorkout: false`).
-
         Alunos com vínculo ativo **e** cadastros pendentes (`status = pending_signup`), ordenados por `name`.
       responses:
         '200':
@@ -581,8 +577,8 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[AJUSTAR] Detalhe de um aluno'
-      x-status: ajustar
+      summary: '[OK] Detalhe de um aluno'
+      x-status: ok
       responses:
         '200':
           description: Aluno.
@@ -592,16 +588,12 @@ paths:
                 $ref: '#/components/schemas/StudentSummary'
         '404':
           $ref: '#/components/responses/StudentNotFound'
-      description: |
-        **O que corrigir:** responde **500** `get_student() got an unexpected keyword argument 'studentId'`. A rota declara `{studentId}` e a função recebe `student_id`: alinhar os nomes.
     patch:
       tags:
       - Alunos do Personal
-      summary: '[AJUSTAR] Editar dados do aluno no vínculo'
-      x-status: ajustar
+      summary: '[OK] Editar dados do aluno no vínculo'
+      x-status: ok
       description: |
-        **O que corrigir:** responde **500** `update_student() got an unexpected keyword argument 'studentId'`. Mesmo problema de nome do parâmetro.
-
         Semântica de PATCH. O Personal edita só dados do **vínculo** (objetivo, nível, agenda, cobrança) e o `name` exibido.
         O Personal **não** pode trocar o e-mail nem a senha do aluno.
       requestBody:
@@ -624,11 +616,9 @@ paths:
     delete:
       tags:
       - Alunos do Personal
-      summary: '[AJUSTAR] Desvincular aluno'
-      x-status: ajustar
+      summary: '[OK] Desvincular aluno'
+      x-status: ok
       description: |
-        **O que corrigir:** responde **500** `unlink_student() got an unexpected keyword argument 'studentId'`. Mesmo problema de nome do parâmetro.
-
         Encerra o vínculo (`endedAt = agora`); não apaga a conta do aluno nem os dados de saúde dele.
         O treino vigente criado por este Personal é arquivado. Pendente de cadastro → apagar o vínculo pendente.
       responses:
@@ -733,11 +723,9 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[FALTA] Ler estatísticas do aluno'
-      x-status: falta
+      summary: '[OK] Ler estatísticas do aluno'
+      x-status: ok
       description: |
-        **Ainda não existe** (404).
-
         Mesma resposta de `GET /aluno/stats`, para o Personal vinculado.
       responses:
         '200':
@@ -1247,11 +1235,9 @@ paths:
     get:
       tags:
       - Treino (Aluno)
-      summary: '[FALTA] Minhas estatísticas'
-      x-status: falta
+      summary: '[OK] Minhas estatísticas'
+      x-status: ok
       description: |
-        **Ainda não existe** (404).
-
         Calcular em America/Sao_Paulo. Semana = segunda a domingo.
 
         - `totalSessions`: sessões finalizadas desde sempre.
@@ -1389,7 +1375,7 @@ paths:
       summary: '[AJUSTAR] Enviar foto de progresso'
       x-status: ajustar
       description: |
-        **O que corrigir:** responde **500** `Invalid endpoint:`, mesma causa do `POST /profile/photo` (Garage sem endpoint configurado).
+        **O que corrigir:** responde **502** `{"code": "STORAGE_UNAVAILABLE", "error": "file storage is unavailable"}`. O armazenamento de arquivos (Garage) está fora do ar ou sem configuração em produção.
 
         Uma foto por chamada. O app envia até 3 (frente, lado, costas) com o mesmo `takenAt`.
         Mesmas regras de arquivo de `/profile/photo`. Limite de 90 fotos por aluno → `409 PHOTO_LIMIT_REACHED`.
