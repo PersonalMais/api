@@ -14,19 +14,18 @@ info:
     | **[AJUSTAR]** | Existe, mas tem bug ou diferença. O que corrigir está no topo da descrição da operação. |
     | **[FALTA]** | Não existe. Implementar exatamente como descrito. |
 
-    ## Situação em 19/11/2026 (2ª verificação)
+    ## Situação em 20/11/2026 (3ª verificação)
 
-    Das 62 operações, todas já existem. Pendências:
+    **Os 62 endpoints do contrato estão funcionando.** Restam 4 pendências fora dos endpoints:
 
     | # | Pendência | Onde |
     | --- | --- | --- |
-    | 1 | Upload de foto responde **502** `STORAGE_UNAVAILABLE` ("file storage is unavailable") em `POST /profile/photo` e `POST /aluno/photos`. O armazenamento (Garage) segue fora do ar ou sem configuração. Por isso `GET /photos/{photoId}/content` ainda não foi testado. | Perfil, Saúde |
-    | 2 | `GET /list/database-examples.json` continua **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
-    | 3 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). | Todos |
-    | 4 | O `/openapi.json` ainda documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação para os schemas deste contrato. | Documentação |
-    | 5 | **Decidir o limite do plano `pro`:** o app mostra 5 alunos, o backend aplica 15. Os dois precisam usar o mesmo número. | Limites de plano |
+    | 1 | `GET /list/database-examples.json` continua **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
+    | 2 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). Só afeta a versão web do app. | Todos |
+    | 3 | O `/openapi.json` ainda documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação para os schemas deste contrato. | Documentação |
+    | 4 | **Decidir o limite do plano `pro`:** o app mostra 5 alunos, o backend aplica 15. Os dois precisam usar o mesmo número. | Limites de plano |
 
-    Resolvido desde a 1ª verificação: `GET`/`PATCH`/`DELETE /personal/students/{studentId}` (era 500), `GET /aluno/stats` e `GET /personal/students/{studentId}/stats` (não existiam), `hasWorkout` (vinha sempre `false`) e erros sem traceback no corpo (o erro de upload agora vem limpo).
+    Resolvido desde a 2ª verificação: upload de foto (`POST /profile/photo` e `POST /aluno/photos` davam 502) e `GET /photos/{photoId}/content`, testado com as permissões certas (perfil: qualquer usuário logado; progresso: o aluno e o Personal vinculado; Personal de fora recebe 404).
 
     ## Convenções (valem para todos os endpoints)
 
@@ -44,7 +43,7 @@ info:
 
     ## Fora do contrato
 
-    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 2).
+    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 1).
 
     ## Códigos de erro
 
@@ -436,11 +435,9 @@ paths:
     post:
       tags:
       - Perfil
-      summary: '[AJUSTAR] Trocar foto de perfil (Personal e Aluno)'
-      x-status: ajustar
+      summary: '[OK] Trocar foto de perfil (Personal e Aluno)'
+      x-status: ok
       description: |
-        **O que corrigir:** responde **502** `{"code": "STORAGE_UNAVAILABLE", "error": "file storage is unavailable"}`. O armazenamento de arquivos (Garage) está fora do ar ou sem configuração em produção.
-
         1. `multipart/form-data` com o campo `file`. Aceitar só `image/jpeg`, `image/png`, `image/webp` (checar o conteúdo, não só o header). Máximo 10 MB.
         2. Substitui a foto anterior (apagar o arquivo antigo).
         3. Grava `photoUrl` no usuário apontando para `GET /photos/{photoId}/content` e devolve o `User`.
@@ -471,11 +468,9 @@ paths:
     get:
       tags:
       - Perfil
-      summary: '[AJUSTAR] Conteúdo de uma foto'
-      x-status: ajustar
+      summary: '[OK] Conteúdo de uma foto'
+      x-status: ok
       description: |
-        **O que corrigir:** ainda não deu para testar porque o upload está fora do ar (`POST /profile/photo` responde 502). Conferir depois de corrigir o upload, incluindo o acesso do Personal às fotos de progresso.
-
         Devolve o binário da imagem com o `Content-Type` original e `Cache-Control: private, max-age=86400`.
 
         Quem pode ver:
@@ -1372,11 +1367,9 @@ paths:
     post:
       tags:
       - Saúde e evolução (Aluno)
-      summary: '[AJUSTAR] Enviar foto de progresso'
-      x-status: ajustar
+      summary: '[OK] Enviar foto de progresso'
+      x-status: ok
       description: |
-        **O que corrigir:** responde **502** `{"code": "STORAGE_UNAVAILABLE", "error": "file storage is unavailable"}`. O armazenamento de arquivos (Garage) está fora do ar ou sem configuração em produção.
-
         Uma foto por chamada. O app envia até 3 (frente, lado, costas) com o mesmo `takenAt`.
         Mesmas regras de arquivo de `/profile/photo`. Limite de 90 fotos por aluno → `409 PHOTO_LIMIT_REACHED`.
       requestBody:
