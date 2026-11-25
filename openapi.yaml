@@ -14,18 +14,22 @@ info:
     | **[AJUSTAR]** | Existe, mas tem bug ou diferença. O que corrigir está no topo da descrição da operação. |
     | **[FALTA]** | Não existe. Implementar exatamente como descrito. |
 
-    ## Situação em 20/11/2026 (3ª verificação)
+    ## Situação em 24/11/2026 (4ª verificação, com o app integrado)
 
-    **Os 62 endpoints do contrato estão funcionando.** Restam 4 pendências fora dos endpoints:
+    O app já está integrado a esta API e o fluxo completo foi testado em produção (cadastro, vínculo, treino, sessões, saúde, fotos, notificações). Pendências encontradas:
 
     | # | Pendência | Onde |
     | --- | --- | --- |
-    | 1 | `GET /list/database-examples.json` continua **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
-    | 2 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). Só afeta a versão web do app. | Todos |
-    | 3 | O `/openapi.json` ainda documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação para os schemas deste contrato. | Documentação |
-    | 4 | **Decidir o limite do plano `pro`:** o app mostra 5 alunos, o backend aplica 15. Os dois precisam usar o mesmo número. | Limites de plano |
+    | 1 | Checkout da consultoria responde **503** `official personal is not configured`. Configurar `OFFICIAL_PERSONAL_ID` em produção. | `POST /aluno/consultoria/checkout` |
+    | 2 | `anamnesisCompleted` vem **`false`** mesmo com a anamnese preenchida (o Personal já consegue ler a anamnese em `GET /personal/students/{studentId}/anamnese`). | `StudentSummary` |
+    | 3 | Quando a primeira prescrição cria o treino automaticamente, o aluno **não recebe** `workout_created` (só `workout_updated` depois). | `POST /personal/students/{studentId}/training/exercises` |
+    | 4 | Aluno sem treino recebe `code: NOT_FOUND`; o contrato pede `WORKOUT_NOT_FOUND`. | `GET /aluno/training`, `GET /personal/students/{studentId}/training` |
+    | 5 | `GET /list/database-examples.json` continua **público** e expõe tabelas, contagens e e-mails. Remover ou exigir autenticação. | Fora do contrato |
+    | 6 | **CORS:** o preflight responde 200, mas sem os headers `Access-Control-*` (convenção 11). Só afeta a versão web do app. | Todos |
+    | 7 | O `/openapi.json` ainda documenta as **respostas** com os modelos do banco (snake_case, `password_hash` no `User`). A API real responde certo; corrigir só a documentação. | Documentação |
+    | 8 | **Decidir o limite do plano `pro`:** o backend aplica 15 alunos (e o app já respeita esse número), mas o texto do plano no app diz "Até 5 alunos ativos". Definir o número para os dois ficarem iguais. | Limites de plano |
 
-    Resolvido desde a 2ª verificação: upload de foto (`POST /profile/photo` e `POST /aluno/photos` davam 502) e `GET /photos/{photoId}/content`, testado com as permissões certas (perfil: qualquer usuário logado; progresso: o aluno e o Personal vinculado; Personal de fora recebe 404).
+    O backend também envia notificações `progress_photo_added`, que este contrato passou a listar em `Notification`.
 
     ## Convenções (valem para todos os endpoints)
 
@@ -43,7 +47,7 @@ info:
 
     ## Fora do contrato
 
-    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 1).
+    O backend também tem `/files`, `/files/{file_id}`, `/files/{file_id}/download`, `/list/assets/{filename}` e `/list/database-examples.json`. O app não usa essas rotas. `/list/database-examples.json` precisa sair do ar ou exigir login (pendência 5).
 
     ## Códigos de erro
 
@@ -70,7 +74,7 @@ info:
     | personalPlan | Máximo de alunos com vínculo ativo |
     | --- | --- |
     | `free` | 1 |
-    | `pro` | **A definir:** o app mostra 5, o backend aplica 15 |
+    | `pro` | **A definir:** o backend aplica 15, o texto do plano no app diz 5 |
     | `unlimited` | sem limite |
 servers:
 - url: https://api.personal.matbessa.com.br
@@ -502,9 +506,11 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[OK] Listar meus alunos'
-      x-status: ok
+      summary: '[AJUSTAR] Listar meus alunos'
+      x-status: ajustar
       description: |
+        **O que corrigir:** `anamnesisCompleted` vem `false` mesmo depois de o aluno salvar a anamnese em `PUT /aluno/anamnese`. Testado: o aluno salvou, `GET /personal/students/{studentId}/anamnese` devolveu a anamnese e a lista continuou com `anamnesisCompleted: false`.
+
         Alunos com vínculo ativo **e** cadastros pendentes (`status = pending_signup`), ordenados por `name`.
       responses:
         '200':
@@ -957,9 +963,11 @@ paths:
     get:
       tags:
       - Treino (Personal)
-      summary: '[OK] Treino vigente do aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Treino vigente do aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir:** sem treino vigente responde `code: NOT_FOUND`; o contrato pede `WORKOUT_NOT_FOUND`.
+
         Sem treino vigente → `404 WORKOUT_NOT_FOUND`.
       responses:
         '200':
@@ -1015,9 +1023,11 @@ paths:
     post:
       tags:
       - Treino (Personal)
-      summary: '[OK] Prescrever exercício'
-      x-status: ok
+      summary: '[AJUSTAR] Prescrever exercício'
+      x-status: ajustar
       description: |
+        **O que corrigir:** quando esta chamada cria o treino automaticamente (aluno sem treino vigente), o aluno não recebe a notificação `workout_created`. Enviar `workout_created` também nesse caso.
+
         1. Sem treino vigente → criar um automaticamente com `title = "Treino"`, `division = split` informado.
         2. `split` precisa estar em `division`. Não está → `400`.
         3. `exerciseId` precisa ser global ou customizado do próprio Personal. Senão → `404 NOT_FOUND`.
@@ -1085,9 +1095,11 @@ paths:
     get:
       tags:
       - Treino (Aluno)
-      summary: '[OK] Meu treino vigente'
-      x-status: ok
+      summary: '[AJUSTAR] Meu treino vigente'
+      x-status: ajustar
       description: |
+        **O que corrigir:** sem treino vigente responde `code: NOT_FOUND`; o contrato pede `WORKOUT_NOT_FOUND`.
+
         Mesmo objeto de `GET /personal/students/{studentId}/training`. Sem treino → `404 WORKOUT_NOT_FOUND`.
       responses:
         '200':
@@ -1590,9 +1602,11 @@ paths:
     post:
       tags:
       - Pagamentos simulados
-      summary: '[OK] Contratar consultoria online'
-      x-status: ok
+      summary: '[AJUSTAR] Contratar consultoria online'
+      x-status: ajustar
       description: |
+        **O que corrigir:** responde **503** `{"code": "NOT_FOUND", "error": "official personal is not configured"}`. Configurar a variável `OFFICIAL_PERSONAL_ID` em produção (e usar um `code` coerente, como `INTERNAL_SERVER_ERROR`, enquanto não estiver configurada).
+
         Simulado: aprova sempre.
 
         1. Aluno com vínculo ativo → `409 ALREADY_LINKED`.
@@ -2963,10 +2977,11 @@ components:
           - anamnesis_completed
           - measurement_added
           - payment_received
+          - progress_photo_added
           description: |
             Quem recebe:
             - Aluno: `manual`, `link_confirmed`, `link_ended`, `workout_created`, `workout_updated`.
-            - Personal: `link_confirmed`, `link_ended`, `workout_completed`, `anamnesis_completed`, `measurement_added`, `payment_received`.
+            - Personal: `link_confirmed`, `link_ended`, `workout_completed`, `anamnesis_completed`, `measurement_added`, `progress_photo_added`, `payment_received`.
         title:
           type: string
           example: Novo treino disponível
