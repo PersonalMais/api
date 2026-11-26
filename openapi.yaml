@@ -14,17 +14,38 @@ info:
     | **[AJUSTAR]** | Existe, mas tem bug ou diferença. O que corrigir está no topo da descrição da operação. |
     | **[FALTA]** | Não existe. Implementar exatamente como descrito. |
 
-    ## Situação em 25/11/2026 (5ª verificação)
+    ## Situação em 25/11/2026 (6ª verificação: teste completo)
 
-    O app está integrado a esta API e o fluxo completo funciona em produção. Resta 1 pendência:
+    Foram rodados 147 testes: 133 direto na API (permissões, validações, limites, uploads, notificações) e 14 na interface do app (versão web), com login real de Personal e Aluno. A interface passou em todos. Pendências da API, por prioridade:
 
     | # | Pendência | Onde |
     | --- | --- | --- |
-    | 1 | Checkout da consultoria responde **503** `official personal is not configured`. Configurar `OFFICIAL_PERSONAL_ID` em produção. | `POST /aluno/consultoria/checkout` |
+    | 1 | Checkout da consultoria responde **503** `official personal is not configured`. Configurar `OFFICIAL_PERSONAL_ID`. | `POST /aluno/consultoria/checkout` |
+    | 2 | Excluir exercício customizado em uso responde **500** e expõe a mensagem do banco (`ForeignKeyViolation`, nomes de tabela e constraint). Deve responder `409 EXERCISE_IN_USE`. | `DELETE /personal/exercises/{exerciseId}` |
+    | 3 | Aluno **pendente** (`pending_signup`) não abre nem edita: `GET` e `PATCH` respondem 404 `STUDENT_NOT_FOUND` (o `DELETE` funciona). | `GET`/`PATCH /personal/students/{studentId}` |
+    | 4 | Plano `free`: o painel informa `maxStudents: 3`, mas o cadastro bloqueia no 2º aluno. O limite do contrato é 1; o painel precisa informar o mesmo número aplicado. | `GET /personal/dashboard` |
+    | 5 | Downgrade aceito acima do limite: um `pro` com 3 alunos consegue mudar para `free`. Deve responder `403 PLAN_LIMIT_REACHED`. | `POST /personal/plan/upgrade` |
+    | 6 | Indicação não vira `applied` depois do primeiro pagamento aprovado do Personal indicado. | `POST /personal/plan/upgrade`, `GET /personal/referrals` |
+    | 7 | `lastActivityAt` do aluno continua `null` depois de uma sessão finalizada. | `POST /aluno/sessions/{sessionId}/finish`, `StudentSummary` |
+    | 8 | Recadastrar um aluno que já é seu sem enviar `days`/`time` **apaga** a agenda. Campos ausentes não devem mudar (mesma regra do PATCH). | `POST /personal/students` |
+    | 9 | Divisão com letra repetida é aceita (ex.: `"AA"`). | `PUT /personal/students/{studentId}/training` |
+    | 10 | Redefinição de senha: e-mail inexistente responde **404** `user not found` (revela quais e-mails têm conta). Deve responder igual ao código inválido. O `code` usado (`INVALID_RESET_TOKEN`) não está no contrato: usar `VALIDATION_ERROR` ou incluir o novo código na tabela de erros. | `POST /auth/reset-password` |
+    | 11 | Códigos de erro: rotas de um aluno sem vínculo devolvem `NOT_FOUND` em vez de `STUDENT_NOT_FOUND`; série com índice maior que as séries prescritas devolve 404 em vez de 400. Não afeta o app. | ver operações marcadas |
 
-    Resolvido desde a 4ª verificação: `anamnesisCompleted`, notificação `workout_created` na criação automática do treino, código `WORKOUT_NOT_FOUND`, `/list/database-examples.json` exige login, CORS liberado (a versão web do app funciona) e documentação das respostas no `/openapi.json`. O limite do plano `pro` ficou em 15 alunos, igual no backend e no app.
+    Fora do contrato e ainda simulado no app: login com Google/Apple, verificação de e-mail no cadastro e pagamentos reais. O envio do e-mail de recuperação de senha não foi verificado (a API responde 202).
 
-    Limpeza opcional: o `/openapi.json` ainda lista 9 schemas antigos em snake_case (`Exercise`, `Photo`, `Profile`, `Referral`, `Session`, `StudentLink`, `StoredFile`, `PasswordResetToken`, `UserEntity`) que nenhuma rota usa.
+    ## Próximas etapas (funcionalidades que o app simula hoje)
+
+    Os endpoints abaixo **não existem** e estão marcados como **[FALTA]**. Com eles o app deixa de simular essas partes:
+
+    | # | Funcionalidade | Endpoints novos | O que o app faz hoje |
+    | --- | --- | --- | --- |
+    | A | Verificação de e-mail no cadastro | `POST /auth/verify-email/send`, `POST /auth/verify-email/confirm` | Pede um código de 6 dígitos e aceita qualquer número. |
+    | B | Login com Google e Apple | `POST /auth/social` | Simulado: no login entra sem conta; no cadastro usa contas fixas de exemplo. |
+    | C | Pagamentos reais (Pix e cartão) | `POST /personal/plan/checkout`, `POST /aluno/consultoria/checkout` (ajuste), `GET /payments/{paymentId}`, `POST /payments/webhook` | O upgrade de plano e a consultoria aprovam tudo sem cobrar. |
+    | D | E-mail de recuperação de senha | `POST /auth/forgot-password` (confirmar envio) | A API responde 202, mas o envio real do e-mail não foi verificado. |
+
+    Quando cada item estiver pronto, o app é adaptado para usar o endpoint novo.
 
     ## Convenções (valem para todos os endpoints)
 
@@ -63,6 +84,12 @@ info:
     | 409 | `PHOTO_LIMIT_REACHED` | Aluno com 90 fotos de progresso. |
     | 413 | `FILE_TOO_LARGE` | Upload acima de 10 MB. |
     | 415 | `UNSUPPORTED_MEDIA_TYPE` | Upload que não é JPEG, PNG ou WebP. |
+    | 400 | `INVALID_VERIFICATION_CODE` | Código de verificação de e-mail errado ou expirado. |
+    | 429 | `TOO_MANY_ATTEMPTS` | Muitas tentativas de código ou reenvio antes do tempo. |
+    | 401 | `INVALID_SOCIAL_TOKEN` | Token do Google/Apple inválido, expirado ou de outro app. |
+    | 400 | `SOCIAL_SIGNUP_REQUIRES_ROLE` | Primeiro acesso por Google/Apple sem `role` (o app precisa perguntar se é Personal ou Aluno). |
+    | 402 | `PAYMENT_REJECTED` | Pagamento recusado pelo meio de pagamento. |
+    | 502 | `PAYMENT_PROVIDER_UNAVAILABLE` | Meio de pagamento fora do ar. |
 
     ## Limites de plano do Personal
 
@@ -103,6 +130,8 @@ tags:
   description: Fluxos de pagamento que hoje só aprovam. Precisam persistir o resultado.
 - name: Suporte
   description: Tickets de suporte.
+- name: Próximas etapas
+  description: Funcionalidades que o app ainda simula. Ver a seção "Próximas etapas" no topo.
 security:
 - bearerAuth: []
 paths:
@@ -243,6 +272,8 @@ paths:
       summary: '[OK] Esqueci a senha'
       x-status: ok
       description: |
+        **Próxima etapa (confirmar):** a rota responde `202`, mas o envio real do e-mail não foi verificado nos testes. Conferir se existe provedor de e-mail configurado em produção (ex.: Amazon SES, Resend ou SendGrid, com remetente do domínio do app) e se o e-mail chega com o código de 6 dígitos. O mesmo provedor serve para `POST /auth/verify-email/send`.
+
         1. Gerar um código de 6 dígitos, válido por 30 minutos e de uso único.
         2. Enviar por e-mail. Enquanto não houver provedor de e-mail, logar o código no servidor (nunca devolver na resposta).
         3. Responder **sempre** `202`, exista o e-mail ou não, para não revelar quais e-mails têm conta.
@@ -269,9 +300,11 @@ paths:
     post:
       tags:
       - Autenticação
-      summary: '[OK] Redefinir senha'
-      x-status: ok
+      summary: '[AJUSTAR] Redefinir senha'
+      x-status: ajustar
       description: |
+        **O que corrigir:** e-mail inexistente responde **404** `user not found`, revelando quais e-mails têm conta; responder exatamente como código inválido. O código inválido usa `code: INVALID_RESET_TOKEN`, que não está na tabela de erros: usar `VALIDATION_ERROR` ou documentar o novo código.
+
         `token` é o código de 6 dígitos de `/auth/forgot-password`. Código errado, expirado ou já usado → `400` `VALIDATION_ERROR`.
         Ao redefinir, revogar todas as sessões abertas do usuário.
       security: []
@@ -519,9 +552,11 @@ paths:
     post:
       tags:
       - Alunos do Personal
-      summary: '[OK] Cadastrar e vincular aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Cadastrar e vincular aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir:** recadastrar um aluno que já é seu sem enviar `days`/`time` grava `days: []` e `time: null`, apagando a agenda. Campos ausentes não devem mudar.
+
         Regras, nesta ordem:
 
         1. Checar o limite do plano (contando vínculos ativos e pendentes). Atingido → `403 PLAN_LIMIT_REACHED`.
@@ -571,8 +606,8 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[OK] Detalhe de um aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Detalhe de um aluno'
+      x-status: ajustar
       responses:
         '200':
           description: Aluno.
@@ -582,12 +617,16 @@ paths:
                 $ref: '#/components/schemas/StudentSummary'
         '404':
           $ref: '#/components/responses/StudentNotFound'
+      description: |
+        **O que corrigir:** para aluno pendente (`status: pending_signup`, usando o `id` que vem na lista) responde 404 `STUDENT_NOT_FOUND`. O `DELETE` com o mesmo id funciona.
     patch:
       tags:
       - Alunos do Personal
-      summary: '[OK] Editar dados do aluno no vínculo'
-      x-status: ok
+      summary: '[AJUSTAR] Editar dados do aluno no vínculo'
+      x-status: ajustar
       description: |
+        **O que corrigir:** para aluno pendente responde 404 `STUDENT_NOT_FOUND`, então o Personal não consegue editar quem ainda não se cadastrou.
+
         Semântica de PATCH. O Personal edita só dados do **vínculo** (objetivo, nível, agenda, cobrança) e o `name` exibido.
         O Personal **não** pode trocar o e-mail nem a senha do aluno.
       requestBody:
@@ -652,9 +691,11 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[OK] Ler anamnese do aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Ler anamnese do aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir (menor):** para aluno sem vínculo com o Personal responde `code: NOT_FOUND`; o contrato pede `STUDENT_NOT_FOUND` (como já fazem `/stats` e o detalhe do aluno).
+
         Mesma resposta de `GET /aluno/anamnese`, para o Personal vinculado.
       responses:
         '200':
@@ -675,9 +716,11 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[OK] Ler medidas do aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Ler medidas do aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir (menor):** para aluno sem vínculo com o Personal responde `code: NOT_FOUND`; o contrato pede `STUDENT_NOT_FOUND` (como já fazem `/stats` e o detalhe do aluno).
+
         Mesma lista de `GET /aluno/measurements` (mais antiga primeiro), para o Personal vinculado.
       responses:
         '200':
@@ -696,9 +739,11 @@ paths:
     get:
       tags:
       - Alunos do Personal
-      summary: '[OK] Ler fotos de progresso do aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Ler fotos de progresso do aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir (menor):** para aluno sem vínculo com o Personal responde `code: NOT_FOUND`; o contrato pede `STUDENT_NOT_FOUND` (como já fazem `/stats` e o detalhe do aluno).
+
         Mesma lista de `GET /aluno/photos`, para o Personal vinculado.
       responses:
         '200':
@@ -935,9 +980,11 @@ paths:
     delete:
       tags:
       - Exercícios
-      summary: '[OK] Excluir exercício customizado'
-      x-status: ok
+      summary: '[AJUSTAR] Excluir exercício customizado'
+      x-status: ajustar
       description: |
+        **O que corrigir:** com o exercício em uso responde **500** `INTERNAL_SERVER_ERROR` e o `error` traz a mensagem do PostgreSQL (`ForeignKeyViolation ... prescribed_exercises_exercise_id_fkey`). Checar o uso antes de apagar e responder `409 EXERCISE_IN_USE`; nunca devolver mensagens do banco.
+
         Só se não estiver em nenhum treino (vigente ou arquivado). Em uso → `409 EXERCISE_IN_USE`.
       responses:
         '204':
@@ -956,9 +1003,11 @@ paths:
     get:
       tags:
       - Treino (Personal)
-      summary: '[OK] Treino vigente do aluno'
-      x-status: ok
+      summary: '[AJUSTAR] Treino vigente do aluno'
+      x-status: ajustar
       description: |
+        **O que corrigir (menor):** para aluno sem vínculo com o Personal responde `code: NOT_FOUND`; o contrato pede `STUDENT_NOT_FOUND` (como já fazem `/stats` e o detalhe do aluno).
+
         Sem treino vigente → `404 WORKOUT_NOT_FOUND`.
       responses:
         '200':
@@ -976,9 +1025,11 @@ paths:
     put:
       tags:
       - Treino (Personal)
-      summary: '[OK] Criar ou alterar a estrutura do treino'
-      x-status: ok
+      summary: '[AJUSTAR] Criar ou alterar a estrutura do treino'
+      x-status: ajustar
       description: |
+        **O que corrigir:** aceita `division` com letra repetida (testado: `"AA"` criou o treino). Validar letras únicas e em ordem.
+
         Cria o treino vigente se não existir (`201`), senão altera (`200`).
 
         1. `division` são letras maiúsculas sem repetir, em ordem, de 1 a 7 (`A`, `AB`, `ABC`... `ABCDEFG`). Outro formato → `400`.
@@ -1174,9 +1225,11 @@ paths:
     put:
       tags:
       - Treino (Aluno)
-      summary: '[OK] Marcar ou desmarcar série'
-      x-status: ok
+      summary: '[AJUSTAR] Marcar ou desmarcar série'
+      x-status: ajustar
       description: |
+        **O que corrigir (menor):** `setIndex` maior ou igual às séries prescritas responde 404 `prescribed set not found`; o esperado é `400 VALIDATION_ERROR`.
+
         **Upsert idempotente**: cria ou substitui o registro da série. Chamar duas vezes com o mesmo corpo dá o mesmo resultado (nunca `409`).
         O app chama a cada toque no checkbox da série. Sessão finalizada → `400`.
       requestBody:
@@ -1202,9 +1255,11 @@ paths:
     post:
       tags:
       - Treino (Aluno)
-      summary: '[OK] Finalizar sessão'
-      x-status: ok
+      summary: '[AJUSTAR] Finalizar sessão'
+      x-status: ajustar
       description: |
+        **O que corrigir:** depois de finalizar, o `lastActivityAt` do aluno em `GET /personal/students` continua `null`. Atualizar com o `finishedAt` (e considerar isso em `activeStudents` do painel).
+
         Grava `finishedAt`, `durationSeconds` e `feedback`. Notifica o Personal (`workout_completed`). Já finalizada → devolve como está.
       requestBody:
         required: false
@@ -1479,9 +1534,11 @@ paths:
     get:
       tags:
       - Personal
-      summary: '[OK] Painel do Personal'
-      x-status: ok
+      summary: '[AJUSTAR] Painel do Personal'
+      x-status: ajustar
       description: |
+        **O que corrigir:** no plano `free` devolve `maxStudents: 3`, mas `POST /personal/students` bloqueia no 2º aluno. Devolver o limite realmente aplicado (1, pela tabela de limites).
+
         - `totalStudents`: vínculos ativos + pendentes.
         - `activeStudents`: vínculos ativos com sessão finalizada nos últimos 7 dias.
         - `pendingAnamnesis`: vínculos ativos sem anamnese.
@@ -1500,9 +1557,11 @@ paths:
     get:
       tags:
       - Personal
-      summary: '[OK] Minhas indicações'
-      x-status: ok
+      summary: '[AJUSTAR] Minhas indicações'
+      x-status: ajustar
       description: |
+        **O que corrigir:** o crédito continua `pending` mesmo depois de o Personal indicado fazer o upgrade para `pro`/`unlimited` (ver `POST /personal/plan/upgrade`).
+
         `credits` mais recente primeiro. `totalDiscount` soma `credit` de todos, em reais.
         Um crédito vira `applied` quando o Personal indicado tem o primeiro pagamento aprovado em `/personal/plan/upgrade`.
       responses:
@@ -1551,12 +1610,16 @@ paths:
     post:
       tags:
       - Pagamentos simulados
-      summary: '[OK] Trocar plano do Personal'
-      x-status: ok
+      summary: '[AJUSTAR] Trocar plano do Personal'
+      x-status: ajustar
       description: |
+        **O que corrigir:** (1) downgrade abaixo do número de alunos é aceito (testado: `pro` com 3 alunos mudou para `free` com 200); deve responder `403 PLAN_LIMIT_REACHED`. (2) O primeiro pagamento aprovado de um Personal indicado não muda o `Referral` para `applied`.
+
         Simulado: aprova sempre. **Precisa gravar** `personalPlan` no usuário e devolver o `User` atualizado.
         Downgrade para um plano com limite menor que os alunos atuais → `403 PLAN_LIMIT_REACHED` (não desvincular ninguém).
         Primeiro pagamento aprovado de `pro`/`unlimited` marca o `Referral` correspondente como `applied`.
+
+        **Próxima etapa:** quando `POST /personal/plan/checkout` existir, esta rota passa a aceitar só `plan: free` (downgrade).
       requestBody:
         required: true
         content:
@@ -1592,7 +1655,7 @@ paths:
       summary: '[AJUSTAR] Contratar consultoria online'
       x-status: ajustar
       description: |
-        **O que corrigir:** responde **503** `{"code": "NOT_FOUND", "error": "official personal is not configured"}`. Configurar a variável `OFFICIAL_PERSONAL_ID` em produção (e usar um `code` coerente, como `INTERNAL_SERVER_ERROR`, enquanto não estiver configurada).
+        **O que corrigir:** responde **503** `{"code": "NOT_FOUND", "error": "official personal is not configured"}`. Configurar `OFFICIAL_PERSONAL_ID` em produção.
 
         Simulado: aprova sempre.
 
@@ -1602,6 +1665,8 @@ paths:
         4. Responder `200` com `ConsultoriaCheckoutResponse`.
 
         Preços (só exibição): mensal R$ 99,90 · trimestral R$ 279,90 · semestral R$ 569,90.
+
+        **Próxima etapa (pagamento real):** trocar a aprovação simulada pelas "Regras comuns de pagamento" de `POST /personal/plan/checkout`, aceitando também `cardToken`, `installments` e o header `Idempotency-Key`, e respondendo `201` com `Payment`. O vínculo com o Personal oficial e a assinatura só são criados quando o pagamento vira `approved`. O app acompanha por `GET /payments/{paymentId}`.
       requestBody:
         required: true
         content:
@@ -1675,6 +1740,240 @@ paths:
                 $ref: '#/components/schemas/SupportTicket'
         '400':
           $ref: '#/components/responses/ValidationError'
+  /auth/verify-email/send:
+    post:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Enviar código de verificação de e-mail'
+      x-status: falta
+      description: |
+        1. Gera um código de **6 dígitos**, válido por **15 minutos**, e envia para o e-mail do usuário logado. Um código novo invalida o anterior.
+        2. O `POST /auth/signup` com e-mail e senha **já dispara** este envio automaticamente; esta rota é para o botão "Reenviar código".
+        3. Reenvio no máximo 1 vez a cada 60 segundos por usuário → senão `429 TOO_MANY_ATTEMPTS`.
+        4. E-mail já verificado → `204` sem enviar nada.
+        5. Responde `204`. Nunca devolver o código na resposta.
+      responses:
+        '204':
+          description: Código enviado (ou e-mail já verificado).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: '`TOO_MANY_ATTEMPTS`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/verify-email/confirm:
+    post:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Confirmar e-mail com o código'
+      x-status: falta
+      description: |
+        1. Compara com o último código enviado ao usuário logado.
+        2. Código errado ou expirado → `400 INVALID_VERIFICATION_CODE`. Depois de **5 erros** seguidos o código é invalidado e a resposta passa a ser `429 TOO_MANY_ATTEMPTS` até um novo envio.
+        3. Certo → grava `emailVerifiedAt` e devolve o `User`.
+        4. O app **não bloqueia** o uso enquanto o e-mail não for verificado; ele só mostra a etapa logo após o cadastro.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - code
+              properties:
+                code:
+                  type: string
+                  pattern: ^\d{6}$
+                  example: '482913'
+      responses:
+        '200':
+          description: E-mail verificado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: '`INVALID_VERIFICATION_CODE`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: '`TOO_MANY_ATTEMPTS`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/social:
+    post:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Entrar ou cadastrar com Google/Apple'
+      x-status: falta
+      security: []
+      description: |
+        Uma rota única para login e cadastro social.
+
+        1. **Validar o `idToken`** com as chaves públicas do provedor: Google (`https://www.googleapis.com/oauth2/v3/certs`) ou Apple (`https://appleid.apple.com/auth/keys`). Conferir assinatura, `exp`, `iss` e `aud` (os client IDs do app, em variáveis de ambiente: `GOOGLE_CLIENT_IDS` com os IDs de iOS, Android e Web; `APPLE_BUNDLE_ID`). Inválido → `401 INVALID_SOCIAL_TOKEN`.
+        2. **Identificar a conta** pelo par `provider` + `sub` do token (guardar numa tabela de identidades sociais, ligada ao usuário).
+        3. Identidade já existe → login: responde `200` com `isNewUser: false`.
+        4. Identidade nova, mas já existe usuário com o mesmo e-mail **e** o provedor marca o e-mail como verificado (`email_verified`) → liga a identidade a esse usuário e faz login (`200`, `isNewUser: false`).
+        5. Conta nova → exige `role` (senão `400 SOCIAL_SIGNUP_REQUIRES_ROLE`, e o app pergunta Personal ou Aluno e chama de novo). Cria o usuário **sem senha**, com `emailVerifiedAt` preenchido quando o provedor verificou o e-mail, aplica as mesmas regras do `POST /auth/signup` (plano, código de indicação, vínculo pendente) e responde `201` com `isNewUser: true`.
+        6. **Apple com e-mail oculto** (`@privaterelay.appleid.com`): tratar como e-mail normal.
+        7. Usuário criado só por login social que tentar `POST /auth/login` com senha → `401 INVALID_CREDENTIALS` (ele pode criar senha pelo fluxo de esqueci a senha).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialAuthRequest'
+      responses:
+        '200':
+          description: Login de conta existente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialAuthResponse'
+        '201':
+          description: Conta criada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialAuthResponse'
+        '400':
+          description: '`SOCIAL_SIGNUP_REQUIRES_ROLE` ou `VALIDATION_ERROR`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: '`INVALID_SOCIAL_TOKEN`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /personal/plan/checkout:
+    post:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Pagar o plano do Personal (Pix ou cartão)'
+      x-status: falta
+      description: |
+        **Regras comuns de pagamento:**
+
+        1. **Meio de pagamento: a ser definido pela equipe.** Precisa oferecer Pix e cartão no Brasil e um SDK para React Native que gere o token do cartão no aparelho. Credenciais só em variáveis de ambiente.
+        2. O **valor sai da tabela de preços do servidor**, nunca do app: Personal `pro` R$ 15,90/mês e `unlimited` R$ 39,90/mês; consultoria `mensal` R$ 99,90, `trimestral` R$ 279,90, `semestral` R$ 569,90.
+        3. **Pix:** cria a cobrança com validade de 30 minutos e responde `201` com `status: pending` e o bloco `pix`. O app mostra o QR Code/copia e cola e consulta `GET /payments/{paymentId}` a cada 5 segundos até mudar o status.
+        4. **Cartão:** cobra com o `cardToken` e responde `201` já com `approved` ou `rejected` (`402 PAYMENT_REJECTED` com `rejectionReason` quando recusado).
+        5. **A aprovação só vale pelo webhook** (`POST /payments/webhook`) ou pela consulta ao meio de pagamento. O que libera o plano/consultoria é a mudança para `approved`, nunca a resposta do app.
+        6. Idempotência: enviar o header `Idempotency-Key` (UUID gerado pelo app). A mesma chave em até 24 h devolve o mesmo pagamento.
+        7. Meio de pagamento fora do ar → `502 PAYMENT_PROVIDER_UNAVAILABLE`.
+
+        **Específico do plano:**
+
+        1. `plan` só aceita `pro` ou `unlimited`. Igual ao plano atual e ainda vigente → `400`.
+        2. Ao aprovar: grava `personalPlan`, grava `personalPlanExpiresAt` = aprovação + 1 mês, marca o `Referral` do Personal como `applied` (se for o primeiro pagamento) e cria notificação `payment_received` para o próprio Personal.
+        3. **Cadastro com plano pago:** o `POST /auth/signup` passa a criar o Personal como `free` com `pendingPlan` = plano escolhido; logo depois o app chama este checkout. Só ao aprovar o plano vira `pro`/`unlimited`.
+        4. O `POST /personal/plan/upgrade` atual (simulado) passa a aceitar **apenas** `plan: free` (downgrade, com a regra de limite de alunos). Upgrade pago só por aqui.
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/CheckoutRequest'
+              - type: object
+                required:
+                - plan
+                properties:
+                  plan:
+                    type: string
+                    enum:
+                    - pro
+                    - unlimited
+      responses:
+        '201':
+          description: Pagamento criado (`pending` no Pix, `approved` no cartão aprovado).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '402':
+          description: '`PAYMENT_REJECTED`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '403':
+          $ref: '#/components/responses/ForbiddenRole'
+        '502':
+          description: '`PAYMENT_PROVIDER_UNAVAILABLE`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /payments/{paymentId}:
+    get:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Consultar um pagamento'
+      x-status: falta
+      description: |
+        Só o dono do pagamento. Se estiver `pending`, consultar o meio de pagamento antes de responder (não depender só do webhook). Pix vencido → `expired`.
+      parameters:
+      - name: paymentId
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Pagamento.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /payments/webhook:
+    post:
+      tags:
+      - Próximas etapas
+      summary: '[FALTA] Webhook do meio de pagamento'
+      x-status: falta
+      security: []
+      description: |
+        Chamado pelo meio de pagamento, não pelo app.
+
+        1. Validar a assinatura da notificação conforme a documentação do meio de pagamento escolhido (em geral um header assinado com o segredo do webhook) → inválida: `401`.
+        2. Buscar o pagamento no meio de pagamento pelo id recebido e atualizar o `status` local.
+        3. Mudou para `approved` → aplicar o efeito (plano do Personal ou consultoria do aluno) **uma única vez**, mesmo que o webhook chegue repetido.
+        4. Responder `200` rápido (sem corpo); processamentos longos em segundo plano.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Formato definido pelo meio de pagamento.
+      responses:
+        '200':
+          description: Recebido.
+        '401':
+          description: Assinatura inválida.
 components:
   securitySchemes:
     bearerAuth:
@@ -1977,6 +2276,23 @@ components:
           type: string
           nullable: true
           maxLength: 2000
+        emailVerifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Preenchido quando o e-mail é confirmado (verificação por código ou login social com e-mail verificado pelo provedor).
+        personalPlanExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Fim do período pago do plano. Vencido sem renovação → plano volta a `free`.
+        pendingPlan:
+          type: string
+          enum:
+          - pro
+          - unlimited
+          nullable: true
+          description: Plano escolhido no cadastro aguardando o primeiro pagamento.
     PersonalProfileRequest:
       type: object
       description: Todos opcionais. Semântica de PATCH.
@@ -3121,3 +3437,128 @@ components:
         createdAt:
           type: string
           format: date-time
+    SocialAuthRequest:
+      type: object
+      required:
+      - provider
+      - idToken
+      properties:
+        provider:
+          type: string
+          enum:
+          - google
+          - apple
+        idToken:
+          type: string
+          description: ID token (JWT) devolvido pelo SDK do Google Sign-In ou pelo Sign in with Apple no aparelho.
+        name:
+          type: string
+          description: Só no primeiro acesso. A Apple envia o nome apenas na primeira autorização, então o app repassa aqui.
+        role:
+          type: string
+          enum:
+          - personal
+          - aluno
+          description: Obrigatório só quando a conta ainda não existe.
+        personalPlan:
+          type: string
+          enum:
+          - free
+          - pro
+          - unlimited
+          description: Mesma regra do signup.
+        referralCode:
+          type: string
+          description: Mesma regra do signup.
+    SocialAuthResponse:
+      allOf:
+      - $ref: '#/components/schemas/SignupResponse'
+      - type: object
+        required:
+        - isNewUser
+        properties:
+          isNewUser:
+            type: boolean
+            description: true quando a conta foi criada nesta chamada (o app leva para o onboarding).
+    Payment:
+      type: object
+      required:
+      - id
+      - purpose
+      - plan
+      - amount
+      - method
+      - status
+      - createdAt
+      properties:
+        id:
+          type: integer
+        purpose:
+          type: string
+          enum:
+          - personal_plan
+          - consultoria
+        plan:
+          type: string
+          example: pro
+          description: Plano do Personal (`pro`, `unlimited`) ou da consultoria (`mensal`, `trimestral`, `semestral`).
+        amount:
+          type: number
+          format: double
+          example: 15.9
+          description: Em reais. Calculado no servidor; nunca vem do app.
+        method:
+          type: string
+          enum:
+          - pix
+          - card
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - expired
+          - refunded
+        pix:
+          type: object
+          nullable: true
+          description: Só para Pix com status `pending`.
+          properties:
+            copyPaste:
+              type: string
+              description: Código Pix copia e cola.
+            qrCodeBase64:
+              type: string
+              description: Imagem PNG do QR Code em base64.
+            expiresAt:
+              type: string
+              format: date-time
+        rejectionReason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type: string
+          format: date-time
+          nullable: true
+    CheckoutRequest:
+      type: object
+      required:
+      - method
+      properties:
+        method:
+          type: string
+          enum:
+          - pix
+          - card
+        cardToken:
+          type: string
+          description: Obrigatório para cartão. Token gerado no aparelho pelo SDK do meio de pagamento; o número do cartão **nunca** passa pelo backend.
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 12
+          default: 1
